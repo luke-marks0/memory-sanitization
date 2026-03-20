@@ -59,5 +59,8 @@ The repository currently provides:
 - a summarizer scaffold;
 - a lab matrix script entrypoint.
 
-Real benchmark execution and regression tracking land in later phases.
+The current executable benchmark path is the host-only `minimal` profile flow
+used by `dev-small`. HBM and hybrid profile names remain shipped for later
+phases, but `bench run` reports them as not yet executable.
 
+Full benchmark execution and regression tracking land in later phases.

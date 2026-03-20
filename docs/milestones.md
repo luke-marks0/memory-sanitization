@@ -83,16 +83,19 @@ Status:
   session with a verifier-owned host lease, canonical PoRep-unit materialization,
   deterministic session-plan-bound tail filler, per-region Merkle commitment,
   challenge verification, deadline enforcement, and cleanup;
-- the real CLI path routes materialization and challenge openings through a
-  prover worker subprocess rather than doing prover work in the verifier
-  process;
+- the real CLI path now uses the versioned gRPC Unix-socket transport defined in
+  `proto/pose/v1/session.proto`, with `pose prover serve --config ...` as the
+  prover endpoint and an auto-started ephemeral prover for local runs;
 - host sessions now validate the returned region manifest against the actual
   leased bytes before accepting the outer proof;
+- `pose verifier run --plan ...` and retained-session rechallenge flows are
+  implemented on the production path;
 - adversarial host-memory coverage now includes replayed openings under a new
   session nonce, wrong outer bytes, partial overwrite, sparse writes, timeout,
   mismatch between declared and actual payload length, insufficient real-PoRep
   ratio, and cleanup failure reporting;
-- Phase 1 is complete on the current host-only `minimal` profile path.
+- Phase 1 is complete and spec-compliant on the current host-only `minimal`
+  profile path.
 
 ## Milestone 4: Single-H100 HBM
 

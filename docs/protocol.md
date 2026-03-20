@@ -5,12 +5,18 @@
 The target transport is versioned gRPC over Unix domain sockets by default, with
 loopback TCP allowed when Unix sockets are unavailable.
 
-The current repository foundation ships the protocol schema and Python message
-types, but not a production transport implementation yet.
+Phase 1 now implements the same-host production path over versioned gRPC Unix
+domain sockets.
+
+- the protobuf schema lives in `proto/pose/v1/session.proto`;
+- generated Python bindings live in `src/pose/v1/`;
+- `pose prover serve --config prover.toml` runs the prover-side gRPC service;
+- `pose verifier run ...` auto-starts an ephemeral prover service for local
+  host-only sessions unless the user starts one explicitly.
 
 ## Normative Session Flow
 
-The planned session flow follows the specification exactly:
+The implemented Phase 1 host path follows the spec-defined flow:
 
 1. `Discover`
 2. `PlanSession`
@@ -46,7 +52,7 @@ verifier-tracked memory.
 
 ## Output Requirements
 
-Every verifier run must produce:
+Every verifier run produces:
 
 - a machine-readable JSON result artifact;
 - a stable verdict;
@@ -54,6 +60,5 @@ Every verifier run must produce:
 - per-phase timings;
 - environment metadata.
 
-The current foundation provides a Python result schema module that encodes these
-required fields so later phases can build on a stable contract.
-
+The verifier writes the canonical JSON artifact under `.pose/results/`, prints a
+human-readable summary to stderr, and prints the JSON artifact to stdout.

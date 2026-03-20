@@ -5,7 +5,8 @@ import json
 import sys
 
 from pose.prover.service import ProverService
-from pose.prover.host_worker import handle_request_json
+from pose.prover.grpc_service import serve_unix
+from pose.prover.host_worker import handle_request_json, handle_resident_session_json
 
 
 def _print_json(payload: dict[str, object]) -> None:
@@ -23,16 +24,23 @@ def handle_self_test(_args: argparse.Namespace) -> int:
 
 
 def handle_serve(args: argparse.Namespace) -> int:
-    print(
-        f"prover serve is not implemented yet; config requested: {args.config}",
-        file=sys.stderr,
-    )
-    return 2
+    ProverService().serve(args.config)
+    return 0
+
+
+def handle_grpc_serve(args: argparse.Namespace) -> int:
+    serve_unix(args.socket_path)
+    return 0
 
 
 def handle_host_session_worker(_args: argparse.Namespace) -> int:
     response = handle_request_json(sys.stdin.read())
     print(response)
+    return 0
+
+
+def handle_host_session_resident(_args: argparse.Namespace) -> int:
+    handle_resident_session_json(sys.stdin.read())
     return 0
 
 
@@ -55,3 +63,16 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         help=argparse.SUPPRESS,
     )
     worker_parser.set_defaults(func=handle_host_session_worker)
+
+    resident_parser = prover_subparsers.add_parser(
+        "host-session-resident",
+        help=argparse.SUPPRESS,
+    )
+    resident_parser.set_defaults(func=handle_host_session_resident)
+
+    grpc_parser = prover_subparsers.add_parser(
+        "grpc-serve",
+        help=argparse.SUPPRESS,
+    )
+    grpc_parser.add_argument("--socket-path", required=True)
+    grpc_parser.set_defaults(func=handle_grpc_serve)

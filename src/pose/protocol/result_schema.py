@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any
 
 from pose.common.env import capture_environment
@@ -26,9 +26,14 @@ class SessionResult:
     verdict: str
     session_id: str
     profile_name: str
+    run_class: str = "cold"
     session_nonce: str = ""
     session_plan_root: str = ""
     session_manifest_root: str = ""
+    artifact_path: str = ""
+    resident_socket_path: str = ""
+    resident_process_id: int = 0
+    lease_expiry: str = ""
     host_total_bytes: int = 0
     host_usable_bytes: int = 0
     host_covered_bytes: int = 0
@@ -46,10 +51,12 @@ class SessionResult:
     inner_filecoin_verified: bool = False
     outer_pose_verified: bool = False
     challenge_leaf_size: int = 4096
+    challenge_policy: dict[str, int | float] = field(default_factory=dict)
     challenge_count: int = 0
     deadline_ms: int = 0
     response_ms: int = 0
     cleanup_status: str = "NOT_RUN"
+    cleanup_policy: dict[str, bool] = field(default_factory=dict)
     timings_ms: dict[str, int] = field(default_factory=empty_timings)
     environment: dict[str, str] = field(default_factory=capture_environment)
     notes: list[str] = field(default_factory=list)
@@ -67,9 +74,23 @@ class SessionResult:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "SessionResult":
-        result = cls(**payload)
+        if not isinstance(payload, dict):
+            raise ProtocolError("Session result payload must decode to a mapping")
+
+        missing = [name for name in REQUIRED_RESULT_FIELDS if name not in payload]
+        if missing:
+            formatted = ", ".join(sorted(missing))
+            raise ProtocolError(f"Missing required result field(s): {formatted}")
+
+        try:
+            result = cls(**payload)
+        except TypeError as error:
+            raise ProtocolError(f"Malformed session result payload: {error}") from error
         result.validate()
         return result
+
+
+REQUIRED_RESULT_FIELDS = tuple(item.name for item in fields(SessionResult))
 
 
 def bootstrap_result(profile_name: str, note: str | None = None) -> SessionResult:

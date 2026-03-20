@@ -65,11 +65,13 @@ Current implementation state:
   a genuine 2 KiB seal plus verify flow.
 - Canonical PoRep-unit serialization is implemented on the Python-owned path;
   see `docs/serialization.md`.
-- Phase 1 host-memory PoSE is complete on the current host-only path:
-  `pose verifier run --profile dev-small` executes a real local host session
-  through a prover worker subprocess, validates the inner Filecoin proof,
-  validates the outer host-memory proof, enforces deadlines, reports tail
-  filler honestly, and passes the required adversarial host-memory tests.
+- Phase 1 host-memory PoSE is implemented on the current host-only `minimal`
+  profile path: `pose verifier run --profile dev-small` and
+  `pose verifier run --plan plan.yaml` execute real local host sessions over
+  the versioned gRPC Unix-socket protocol, validate the inner Filecoin proof,
+  validate the outer host-memory proof, enforce deadlines, emit canonical
+  result artifacts, and support retained resident sessions plus
+  `pose verifier rechallenge --session-id ...`.
 - Later phases remain ahead: HBM, hybrid, scale-out, and parity-gated Python
   promotion are not implemented yet.
 
@@ -145,19 +147,22 @@ pose prover self-test
 ### Verifier
 
 ```bash
-pose verifier run --profile single-h100-hybrid-max
+pose verifier run --profile dev-small
 pose verifier run --plan plan.yaml --json
-pose verifier rechallenge --session-id <id>
+pose verifier rechallenge --session-id <id> --release
 pose verifier verify-record result.json
 ```
 
 ### Benchmarking
 
 ```bash
-pose bench run --profile single-h100-hbm-max
+pose bench run --profile dev-small
 pose bench matrix --profiles bench_profiles/
 pose bench summarize results/*.json
 ```
+
+Only the current host-only `minimal` path is executable today. The shipped HBM
+and hybrid profile names are reserved for later phases.
 
 ## Expected output
 
@@ -181,6 +186,21 @@ The human-readable summary should surface:
 - real-PoRep ratio
 - total runtime
 - challenge-response runtime
+
+The verifier prints the human summary to stderr and the canonical JSON artifact
+to stdout so scripted callers can always consume machine-readable output.
+
+## Prover Config
+
+The Phase 1 prover server reads a TOML config with a Unix-socket endpoint:
+
+```toml
+[transport]
+uds_path = "/tmp/pose-prover.sock"
+```
+
+The verifier auto-starts an ephemeral prover for local host-only runs, but the
+same gRPC service can also be launched explicitly with `pose prover serve`.
 
 ## Benchmark profiles
 
@@ -276,7 +296,7 @@ make test-hardware
 ### Run a benchmark profile
 
 ```bash
-make bench PROFILE=single-h100-hbm-max
+make bench PROFILE=dev-small
 ```
 
 ## Test strategy

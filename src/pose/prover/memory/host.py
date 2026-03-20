@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 from pose.common.errors import ResourceFailure
 
 if TYPE_CHECKING:
-    from pose.verifier.leasing import HostLease
+    from pose.common.host_lease import HostLease
 
 
 @dataclass(frozen=True)

@@ -18,6 +18,7 @@ Verifier results must use one of the stable verdicts defined by the spec:
 The canonical result artifact must include at least:
 
 - session identity and profile name;
+- run class, session plan root, and session manifest root;
 - host total, usable, and covered bytes;
 - GPU device list and per-device usable plus covered bytes;
 - `real_porep_bytes`, `tail_filler_bytes`, and `real_porep_ratio`;
@@ -25,6 +26,8 @@ The canonical result artifact must include at least:
 - inner and outer verification status;
 - challenge leaf size, count, deadline, and response time;
 - cleanup status;
+- artifact path and, for retained sessions, the resident prover endpoint plus
+  lease expiry;
 - per-phase timings;
 - environment metadata.
 
@@ -41,9 +44,8 @@ The timing map must carry stable keys for:
 - cleanup;
 - total runtime.
 
-## Foundation Status
+## Current Status
 
-The Python module `src/pose/protocol/result_schema.py` defines a stable
-bootstrap schema and validation helpers. Later phases must extend behavior
+The Python module `src/pose/protocol/result_schema.py` defines the current
+Phase 1 result schema and validation helpers. Later phases may extend behavior
 without breaking the required field names or verdict set.
-

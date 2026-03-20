@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -41,3 +42,34 @@ def test_real_vendored_filecoin_bridge_seals_and_verifies() -> None:
     assert parsed.manifest.comm_r_hex == artifact.comm_r_hex
     assert parsed.blob_kinds == ("seal_proof", "public_inputs", "proof_metadata")
     assert reference.verify(artifact) is True
+
+
+def _flip_hex_byte(value: str) -> str:
+    first_byte = int(value[:2], 16) ^ 0xFF
+    return f"{first_byte:02x}{value[2:]}"
+
+
+def _verification_fails(reference: VendoredFilecoinReference, artifact) -> bool:
+    try:
+        return reference.verify(artifact) is False
+    except RuntimeError:
+        return True
+
+
+def test_real_vendored_filecoin_bridge_rejects_tampered_inner_proof_inputs() -> None:
+    root = Path(__file__).resolve().parents[2]
+    subprocess.run([sys.executable, "scripts/build_bridge.py"], cwd=root, check=True)
+
+    reference = VendoredFilecoinReference()
+    artifact = reference.seal()
+    tampered_cases = {
+        "comm_d": replace(artifact, comm_d_hex=_flip_hex_byte(artifact.comm_d_hex)),
+        "comm_r": replace(artifact, comm_r_hex=_flip_hex_byte(artifact.comm_r_hex)),
+        "prover_id": replace(artifact, prover_id_hex=_flip_hex_byte(artifact.prover_id_hex)),
+        "sector_id": replace(artifact, sector_id=artifact.sector_id + 1),
+        "ticket": replace(artifact, ticket_hex=_flip_hex_byte(artifact.ticket_hex)),
+        "proof": replace(artifact, proof_hex=_flip_hex_byte(artifact.proof_hex)),
+    }
+
+    for label, tampered in tampered_cases.items():
+        assert _verification_fails(reference, tampered), label

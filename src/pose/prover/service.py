@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import tomllib
+from pathlib import Path
+
 from pose.common.errors import ResourceFailure, UnsupportedPhaseError
 from pose.filecoin.reference import VendoredFilecoinReference
 from pose.filecoin.mirror.comms import assemble_commitment
 from pose.filecoin.mirror.labels import derive_label
 from pose.filecoin.mirror.parents import drg_parents, expander_parents
 from pose.filecoin.mirror.replica_id import derive_replica_id
+from pose.prover.grpc_service import serve_unix
 
 
 class ProverService:
@@ -49,7 +53,14 @@ class ProverService:
             ],
         }
 
-    def serve(self, _config_path: str) -> None:
-        raise UnsupportedPhaseError(
-            "Prover serving is not implemented in the foundation phase."
-        )
+    def serve(self, config_path: str) -> None:
+        payload = tomllib.loads(Path(config_path).read_text(encoding="utf-8"))
+        transport = payload.get("transport", {})
+        if not isinstance(transport, dict):
+            raise UnsupportedPhaseError("Prover config [transport] section must be a table.")
+        socket_path = transport.get("uds_path") or payload.get("socket_path")
+        if not socket_path:
+            raise UnsupportedPhaseError(
+                "Prover config must define transport.uds_path for the gRPC Unix socket."
+            )
+        serve_unix(str(socket_path))

@@ -7,7 +7,39 @@ from pose.common.errors import ProtocolError
 from pose.common.hashing import sha256_hex
 from pose.common.merkle import commit_payload
 from pose.filecoin.porep_unit import SerializedPoRepUnit, canonical_cbor_dumps
-from pose.prover.object_builder import deterministic_tail_filler
+
+
+def deterministic_tail_filler(
+    session_nonce: str,
+    region_id: str,
+    session_plan_root: str,
+    length: int,
+) -> bytes:
+    from pose.common.hashing import sha256_bytes
+
+    if length <= 0:
+        return b""
+    seed = sha256_bytes(
+        "|".join((session_nonce, region_id, session_plan_root)).encode("utf-8")
+    )
+    repeats = (length // len(seed)) + 1
+    return (seed * repeats)[:length]
+
+
+def build_region_payload(
+    serialized_units: list[bytes],
+    session_nonce: str,
+    region_id: str,
+    session_plan_root: str,
+    tail_filler_bytes: int,
+) -> bytes:
+    payload = b"".join(serialized_units)
+    return payload + deterministic_tail_filler(
+        session_nonce=session_nonce,
+        region_id=region_id,
+        session_plan_root=session_plan_root,
+        length=tail_filler_bytes,
+    )
 
 
 @dataclass(frozen=True)
@@ -73,7 +105,7 @@ class SessionManifest:
     profile_name: str
     payload_profile: str
     leaf_size: int
-    deadline_ms: int
+    deadline_policy: dict[str, int]
     challenge_policy: dict[str, int | float]
     cleanup_policy: dict[str, bool]
     region_manifests: tuple[RegionManifest, ...]
@@ -82,7 +114,7 @@ class SessionManifest:
         return {
             "challenge_policy": dict(self.challenge_policy),
             "cleanup_policy": dict(self.cleanup_policy),
-            "deadline_ms": self.deadline_ms,
+            "deadline_policy": dict(self.deadline_policy),
             "leaf_size": self.leaf_size,
             "nonce": self.nonce,
             "payload_profile": self.payload_profile,

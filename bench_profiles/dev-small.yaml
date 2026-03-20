@@ -4,9 +4,9 @@ target_devices:
   host: true
   gpus: []
 reserve_policy:
-  host_bytes: 1073741824
+  host_bytes: 4096
   per_gpu_bytes: 0
-host_target_fraction: 0.25
+host_target_fraction: 1.0
 per_gpu_target_fraction: 0.0
 porep_unit_profile: minimal
 leaf_size: 4096
@@ -21,4 +21,3 @@ cleanup_policy:
   zeroize: true
   verify_zeroization: false
 repetition_count: 1
-

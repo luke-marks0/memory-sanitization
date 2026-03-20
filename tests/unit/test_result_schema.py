@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from pose.protocol.result_schema import bootstrap_result
+import pytest
+
+from pose.common.errors import ProtocolError
+from pose.protocol.result_schema import SessionResult, bootstrap_result
 
 
 def test_bootstrap_result_contains_required_fields() -> None:
@@ -11,3 +14,10 @@ def test_bootstrap_result_contains_required_fields() -> None:
     assert "total" in payload["timings_ms"]
     assert payload["notes"] == ["unit-test"]
 
+
+def test_from_dict_rejects_missing_required_fields() -> None:
+    payload = bootstrap_result("dev-small").to_dict()
+    payload.pop("host_total_bytes")
+
+    with pytest.raises(ProtocolError, match="host_total_bytes"):
+        SessionResult.from_dict(payload)

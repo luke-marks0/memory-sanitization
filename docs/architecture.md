@@ -79,13 +79,18 @@ This document reflects the completed Phase 1 host-only state:
   host profile path, including verifier-owned host leasing, deterministic
   session-plan-bound tail filler, Merkle commitment, challenge openings,
   deadline enforcement, and cleanup;
-- the host-only CLI path uses a prover worker subprocess for materialization and
-  challenge responses, while the verifier keeps policy, challenge selection,
-  manifest validation, and verdict logic;
+- the host-only CLI path now uses the versioned gRPC Unix-socket protocol from
+  `proto/pose/v1/session.proto`; the verifier keeps policy, challenge
+  selection, manifest validation, and verdict logic while the prover service
+  owns inner-proof generation, materialization, and challenge openings;
 - the host session result artifact now records both `session_plan_root` and
-  `session_manifest_root`;
+  `session_manifest_root`, and retained sessions record the resident prover
+  endpoint needed for rechallenge;
 - adversarial host-memory tests cover replayed openings, wrong outer bytes,
   partial overwrite, sparse writes, timeout, payload-length mismatch,
   insufficient real-PoRep ratio, and cleanup failure reporting;
-- Phase 0 and Phase 1 are complete;
+- `pose verifier run --plan ...` and `pose verifier rechallenge --session-id ...`
+  are implemented on the real host-only path;
+- Phase 0 is complete, and Phase 1 is complete on the current host-only
+  `minimal` profile path;
 - later HBM, hybrid, scale-out, and parity-gated promotion work remains ahead.
