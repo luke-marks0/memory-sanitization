@@ -1,6 +1,5 @@
 [workspace]
 members = [
-  "rust/pose_filecoin_bridge",
   "rust/pose_test_hooks",
 ]
 resolver = "2"
@@ -14,4 +13,3 @@ authors = ["Repository maintainers"]
 [workspace.metadata.pose]
 status = "foundation"
 description = "Workspace scaffold for the future Filecoin Rust bridge and test hooks."
-

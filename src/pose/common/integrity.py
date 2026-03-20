@@ -40,7 +40,7 @@ def scan_production_tree_for_banned_shortcuts(repo_root: Path) -> list[BannedSho
         for path in sorted(file_path for file_path in root.rglob("*") if file_path.is_file()):
             if path in excluded:
                 continue
-            if "__pycache__" in path.parts or path.suffix == ".pyc":
+            if "__pycache__" in path.parts or "target" in path.parts or path.suffix == ".pyc":
                 continue
             text = path.read_text(encoding="utf-8", errors="ignore")
             for line_number, line in enumerate(text.splitlines(), start=1):

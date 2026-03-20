@@ -33,7 +33,7 @@ proof is not enough to claim the payload is a real Filecoin artifact.
   Architecture, threat model, protocol, benchmarking, upstream sync, and result
   schema documentation.
 - `vendor/`
-  Placeholder for the vendored upstream Filecoin workspace and its sync lock.
+  Vendored upstream Filecoin workspace snapshot and sync lock.
 - `rust/`
   Rust workspace skeleton for the Python bridge and deterministic test hooks.
 - `proto/`
@@ -63,12 +63,16 @@ The spec-defined order remains the execution order:
 
 ## Current Status
 
-This document reflects the foundation stage only:
+This document reflects the post-vendoring Phase 0 state:
 
 - repository layout now matches the normative shape;
 - documentation set exists and is aligned to the spec;
-- packaging, bench profiles, scripts, protocol stubs, and module boundaries are
-  present;
-- no upstream Filecoin code has been vendored yet;
-- no production proof path exists yet.
-
+- the official upstream `rust-fil-proofs` workspace is vendored, pinned, and
+  reproducibly revalidated;
+- upstream Rust workspace tests can be bootstrapped and run from this
+  repository;
+- the Rust bridge owns the first real Python-callable seal and verify path for a
+  2 KiB sector;
+- Phase 0 is complete;
+- prover, verifier, benchmark execution, canonical PoRep serialization, and
+  outer-proof flows are still incomplete beyond Phase 0.

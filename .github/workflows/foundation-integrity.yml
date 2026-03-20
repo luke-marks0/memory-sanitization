@@ -45,3 +45,28 @@ jobs:
             ca-certificates
       - name: Run vendored upstream Rust verification
         run: python scripts/run_upstream_rust_tests.py --skip-system-deps
+
+  bridge-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+      - name: Install bridge build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            build-essential \
+            clang \
+            cmake \
+            pkg-config \
+            libhwloc-dev \
+            ocl-icd-opencl-dev \
+            ca-certificates
+      - name: Sync Python dependencies
+        run: uv sync --extra dev
+      - name: Run real bridge smoke test
+        run: make test-bridge

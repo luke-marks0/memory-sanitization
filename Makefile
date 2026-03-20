@@ -2,7 +2,7 @@ PYTHON ?= python
 UV ?= uv
 PROFILE ?= dev-small
 
-.PHONY: sync-upstream check-upstream bootstrap-upstream-rust hydrate-upstream-rust test-upstream-rust build test test-parity test-hardware bench clean
+.PHONY: sync-upstream check-upstream bootstrap-upstream-rust hydrate-upstream-rust build-bridge test-bridge test-upstream-rust build test test-parity test-hardware bench clean
 
 sync-upstream:
 	./scripts/sync_upstream.sh
@@ -17,11 +17,21 @@ bootstrap-upstream-rust:
 hydrate-upstream-rust:
 	$(PYTHON) scripts/run_upstream_rust_tests.py --hydrate-only
 
+build-bridge:
+	$(UV) sync --extra dev
+	$(PYTHON) scripts/build_bridge.py
+
+test-bridge:
+	$(MAKE) hydrate-upstream-rust
+	$(MAKE) build-bridge
+	POSE_RUN_REAL_BRIDGE_TESTS=1 $(UV) run pytest tests/e2e/test_real_filecoin_bridge.py
+
 test-upstream-rust:
 	$(PYTHON) scripts/run_upstream_rust_tests.py
 
 build:
 	$(UV) sync --extra dev
+	$(MAKE) build-bridge
 	$(UV) run $(PYTHON) -m compileall src tests
 	$(UV) run pose --help > /dev/null
 

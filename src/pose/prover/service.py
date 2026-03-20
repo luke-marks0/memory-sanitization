@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from pose.common.errors import UnsupportedPhaseError
+from pose.common.errors import ResourceFailure, UnsupportedPhaseError
+from pose.filecoin.reference import VendoredFilecoinReference
 from pose.filecoin.mirror.comms import assemble_commitment
 from pose.filecoin.mirror.labels import derive_label
 from pose.filecoin.mirror.parents import drg_parents, expander_parents
@@ -9,11 +10,22 @@ from pose.filecoin.mirror.replica_id import derive_replica_id
 
 class ProverService:
     def describe(self) -> dict[str, object]:
+        try:
+            bridge_status = VendoredFilecoinReference().bridge_status()
+        except ResourceFailure as error:
+            bridge_status = {
+                "status": "bridge-unavailable",
+                "supports_real_filecoin_reference": False,
+                "note": str(error),
+            }
         return {
-            "status": "foundation-scaffold",
+            "status": "phase0-bridge-ready",
             "supports_host_memory": False,
             "supports_gpu_hbm": False,
-            "supports_real_filecoin_reference": False,
+            "supports_real_filecoin_reference": bool(
+                bridge_status.get("supports_real_filecoin_reference", False)
+            ),
+            "filecoin_bridge": bridge_status,
         }
 
     def self_test(self) -> dict[str, object]:
@@ -32,10 +44,12 @@ class ProverService:
             "commitment": assemble_commitment(
                 [replica_id.encode("ascii"), label.encode("ascii")]
             ),
+            "real_filecoin_bridge_available": self.describe()[
+                "supports_real_filecoin_reference"
+            ],
         }
 
     def serve(self, _config_path: str) -> None:
         raise UnsupportedPhaseError(
             "Prover serving is not implemented in the foundation phase."
         )
-

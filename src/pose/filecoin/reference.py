@@ -1,21 +1,104 @@
 from __future__ import annotations
 
-from typing import Protocol
+import importlib
+import json
+import subprocess
+import sys
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any, Protocol
 
-from pose.common.errors import UnsupportedPhaseError
+from pose.common.errors import ResourceFailure
 
 
 class FilecoinReference(Protocol):
-    def bridge_status(self) -> str:
+    def bridge_status(self) -> dict[str, Any]:
         ...
 
 
-class UnavailableFilecoinReference:
-    def bridge_status(self) -> str:
-        return "unavailable"
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[3]
 
-    def seal_and_verify(self) -> None:
-        raise UnsupportedPhaseError(
-            "The real Filecoin reference bridge is not implemented in the foundation phase."
-        )
 
+def build_bridge() -> None:
+    repo_root = _repo_root()
+    subprocess.run(
+        [sys.executable, "scripts/build_bridge.py"],
+        cwd=repo_root,
+        check=True,
+    )
+
+
+def _import_bridge_module(build_if_missing: bool = False) -> Any:
+    try:
+        return importlib.import_module("pose_filecoin_bridge")
+    except ModuleNotFoundError as error:
+        if build_if_missing:
+            build_bridge()
+            importlib.invalidate_caches()
+            return importlib.import_module("pose_filecoin_bridge")
+        raise ResourceFailure(
+            "The real Filecoin bridge is not installed. Run `make build-bridge` or "
+            "`python scripts/build_bridge.py` first."
+        ) from error
+
+
+@dataclass(slots=True)
+class SealRequest:
+    piece_bytes: bytes | None = None
+    prover_id_hex: str | None = None
+    sector_id: int | None = None
+    ticket_hex: str | None = None
+    seed_hex: str | None = None
+    porep_id_hex: str | None = None
+    verify_after_seal: bool = True
+
+    def to_bridge_payload(self) -> dict[str, object]:
+        return {
+            "piece_bytes_hex": self.piece_bytes.hex() if self.piece_bytes is not None else None,
+            "prover_id_hex": self.prover_id_hex,
+            "sector_id": self.sector_id,
+            "ticket_hex": self.ticket_hex,
+            "seed_hex": self.seed_hex,
+            "porep_id_hex": self.porep_id_hex,
+            "verify_after_seal": self.verify_after_seal,
+        }
+
+
+@dataclass(slots=True)
+class SealArtifact:
+    status: str
+    verified_after_seal: bool
+    sector_size: int
+    api_version: str
+    registered_seal_proof: int
+    porep_id_hex: str
+    prover_id_hex: str
+    sector_id: int
+    ticket_hex: str
+    seed_hex: str
+    piece_size: int
+    piece_commitment_hex: str
+    comm_d_hex: str
+    comm_r_hex: str
+    proof_hex: str
+
+    def to_bridge_payload(self) -> dict[str, object]:
+        return asdict(self)
+
+
+class VendoredFilecoinReference:
+    def __init__(self, *, build_if_missing: bool = False) -> None:
+        self._module = _import_bridge_module(build_if_missing=build_if_missing)
+
+    def bridge_status(self) -> dict[str, Any]:
+        return json.loads(self._module.bridge_status_json())
+
+    def seal(self, request: SealRequest | None = None) -> SealArtifact:
+        payload = request.to_bridge_payload() if request is not None else {}
+        return SealArtifact(**json.loads(self._module.seal_json(json.dumps(payload))))
+
+    def verify(self, artifact: SealArtifact) -> bool:
+        payload = artifact.to_bridge_payload()
+        result = json.loads(self._module.verify_json(json.dumps(payload)))
+        return bool(result["verified"])

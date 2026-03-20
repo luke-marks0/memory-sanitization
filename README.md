@@ -56,6 +56,16 @@ This repository is specified to be built in phases:
 
 See `docs/repository-spec.md` for the full normative spec.
 
+The current execution tracker is in `docs/milestones.md`.
+
+Current implementation state:
+
+- Phase 0 foundation is complete: the repo vendors upstream Filecoin Rust,
+  validates the vendored snapshot, and exposes a real Python-callable bridge for
+  a genuine 2 KiB seal plus verify flow.
+- Phase 1 and beyond remain incomplete: canonical PoRep serialization,
+  host-memory outer proof, HBM, hybrid, and scale-out are still ahead.
+
 ## Repository shape
 
 ```text
@@ -214,12 +224,25 @@ make sync-upstream
 make build
 ```
 
+This builds the Python package environment and compiles the Rust bridge
+extension used by the real vendored Filecoin reference path.
+
 ### Run tests
 
 ```bash
 make test
 make test-parity
 ```
+
+### Validate the real Python-to-Filecoin bridge
+
+```bash
+make test-bridge
+```
+
+This hydrates the required proof artifacts, builds the Rust extension, and runs
+an end-to-end Python smoke test that seals and verifies one real 2 KiB Filecoin
+sector through the vendored upstream path.
 
 ### Verify the vendored upstream Rust workspace
 

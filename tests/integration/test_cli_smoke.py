@@ -23,11 +23,10 @@ def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
 def test_prover_inspect_succeeds() -> None:
     result = run_cli("prover", "inspect")
     assert result.returncode == 0
-    assert "foundation-scaffold" in result.stdout
+    assert "supports_real_filecoin_reference" in result.stdout
 
 
 def test_bench_matrix_succeeds() -> None:
     result = run_cli("bench", "matrix", "--profiles", "bench_profiles/")
     assert result.returncode == 0
     assert "dev-small" in result.stdout
-
