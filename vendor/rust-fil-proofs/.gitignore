@@ -1,0 +1,9 @@
+/target
+**/*.rs.bk
+.criterion
+**/*.h
+heaptrack*
+.bencher
+*.profile
+*.heap
+rust-fil-proofs.config.toml

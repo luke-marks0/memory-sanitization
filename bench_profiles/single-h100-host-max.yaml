@@ -1,0 +1,24 @@
+name: single-h100-host-max
+benchmark_class: cold
+target_devices:
+  host: true
+  gpus: []
+reserve_policy:
+  host_bytes: 17179869184
+  per_gpu_bytes: 0
+host_target_fraction: 0.9
+per_gpu_target_fraction: 0.0
+porep_unit_profile: full-cache
+leaf_size: 1048576
+challenge_policy:
+  epsilon: 0.01
+  lambda_bits: 64
+  max_challenges: 1024
+deadline_policy:
+  response_deadline_ms: 2500
+  session_timeout_ms: 1800000
+cleanup_policy:
+  zeroize: true
+  verify_zeroization: false
+repetition_count: 3
+

@@ -1,0 +1,24 @@
+name: dev-small
+benchmark_class: cold
+target_devices:
+  host: true
+  gpus: []
+reserve_policy:
+  host_bytes: 1073741824
+  per_gpu_bytes: 0
+host_target_fraction: 0.25
+per_gpu_target_fraction: 0.0
+porep_unit_profile: minimal
+leaf_size: 4096
+challenge_policy:
+  epsilon: 0.01
+  lambda_bits: 32
+  max_challenges: 64
+deadline_policy:
+  response_deadline_ms: 5000
+  session_timeout_ms: 60000
+cleanup_policy:
+  zeroize: true
+  verify_zeroization: false
+repetition_count: 1
+

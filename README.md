@@ -221,6 +221,20 @@ make test
 make test-parity
 ```
 
+### Verify the vendored upstream Rust workspace
+
+```bash
+make test-upstream-rust
+```
+
+This target bootstraps the upstream-pinned Rust toolchain, hydrates the proof
+artifacts required by the vendored upstream test suite into
+`/var/tmp/filecoin-proof-parameters`, and runs:
+
+```bash
+cargo test --workspace --all-targets
+```
+
 ### Run hardware tests
 
 ```bash

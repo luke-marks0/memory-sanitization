@@ -1,0 +1,24 @@
+name: eight-h100-hbm-max
+benchmark_class: cold
+target_devices:
+  host: false
+  gpus: [0, 1, 2, 3, 4, 5, 6, 7]
+reserve_policy:
+  host_bytes: 8589934592
+  per_gpu_bytes: 2147483648
+host_target_fraction: 0.0
+per_gpu_target_fraction: 0.9
+porep_unit_profile: full-cache
+leaf_size: 1048576
+challenge_policy:
+  epsilon: 0.01
+  lambda_bits: 80
+  max_challenges: 4096
+deadline_policy:
+  response_deadline_ms: 3000
+  session_timeout_ms: 3600000
+cleanup_policy:
+  zeroize: true
+  verify_zeroization: false
+repetition_count: 5
+

@@ -1,0 +1,47 @@
+name: Foundation Integrity
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  python-integrity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+      - name: Install dependencies
+        run: uv sync --extra dev
+      - name: Check vendored upstream integrity
+        run: uv run python scripts/check_upstream_integrity.py
+      - name: Check banned shortcut symbols
+        run: uv run python scripts/check_banned_shortcuts.py
+      - name: Run foundation test suite
+        run: uv run pytest
+
+  upstream-rust-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install vendored upstream build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            build-essential \
+            clang \
+            cmake \
+            pkg-config \
+            libhwloc-dev \
+            ocl-icd-opencl-dev \
+            ca-certificates
+      - name: Run vendored upstream Rust verification
+        run: python scripts/run_upstream_rust_tests.py --skip-system-deps

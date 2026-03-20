@@ -1,0 +1,181 @@
+syntax = "proto3";
+
+package pose.v1;
+
+service PoseSessionService {
+  rpc Discover(DiscoverRequest) returns (DiscoverResponse);
+  rpc PlanSession(PlanSessionRequest) returns (PlanSessionResponse);
+  rpc LeaseRegions(LeaseRegionsRequest) returns (LeaseRegionsResponse);
+  rpc GenerateInnerPoRep(GenerateInnerPoRepRequest) returns (GenerateInnerPoRepResponse);
+  rpc MaterializeRegionPayloads(MaterializeRegionPayloadsRequest) returns (MaterializeRegionPayloadsResponse);
+  rpc CommitRegions(CommitRegionsRequest) returns (CommitRegionsResponse);
+  rpc VerifyInnerProofs(VerifyInnerProofsRequest) returns (VerifyInnerProofsResponse);
+  rpc ChallengeOuter(ChallengeOuterRequest) returns (ChallengeOuterResponse);
+  rpc VerifyOuter(VerifyOuterRequest) returns (VerifyOuterResponse);
+  rpc Finalize(FinalizeRequest) returns (FinalizeResponse);
+  rpc Cleanup(CleanupRequest) returns (CleanupResponse);
+}
+
+message DiscoverRequest {
+  string protocol_version = 1;
+}
+
+message DiscoverResponse {
+  string protocol_version = 1;
+  repeated string capabilities = 2;
+}
+
+message PlanSessionRequest {
+  string profile_name = 1;
+}
+
+message ChallengePolicy {
+  double epsilon = 1;
+  uint32 lambda_bits = 2;
+  uint32 max_challenges = 3;
+}
+
+message DeadlinePolicy {
+  uint32 response_deadline_ms = 1;
+  uint32 session_timeout_ms = 2;
+}
+
+message CleanupPolicy {
+  bool zeroize = 1;
+  bool verify_zeroization = 2;
+}
+
+message RegionPlan {
+  string region_id = 1;
+  string region_type = 2;
+  uint64 usable_bytes = 3;
+  uint32 gpu_device = 4;
+}
+
+message SessionPlan {
+  string session_id = 1;
+  string nonce = 2;
+  string profile_name = 3;
+  string porep_unit_profile = 4;
+  uint32 challenge_leaf_size = 5;
+  ChallengePolicy challenge_policy = 6;
+  DeadlinePolicy deadline_policy = 7;
+  CleanupPolicy cleanup_policy = 8;
+  repeated RegionPlan regions = 9;
+}
+
+message PlanSessionResponse {
+  SessionPlan plan = 1;
+}
+
+message LeaseRegionsRequest {
+  string session_id = 1;
+}
+
+message LeaseRecord {
+  string region_id = 1;
+  string region_type = 2;
+  uint64 usable_bytes = 3;
+  string lease_handle = 4;
+  string lease_expiry = 5;
+}
+
+message LeaseRegionsResponse {
+  repeated LeaseRecord leases = 1;
+}
+
+message GenerateInnerPoRepRequest {
+  string session_id = 1;
+}
+
+message InnerProofArtifact {
+  string region_id = 1;
+  string proof_type = 2;
+  bytes seal_proof = 3;
+  string manifest_digest = 4;
+}
+
+message GenerateInnerPoRepResponse {
+  repeated InnerProofArtifact artifacts = 1;
+}
+
+message MaterializeRegionPayloadsRequest {
+  string session_id = 1;
+}
+
+message RegionCommitment {
+  string region_id = 1;
+  string region_root_hex = 2;
+  uint64 covered_bytes = 3;
+  uint64 real_porep_bytes = 4;
+  uint64 tail_filler_bytes = 5;
+}
+
+message MaterializeRegionPayloadsResponse {
+  repeated RegionCommitment commitments = 1;
+}
+
+message CommitRegionsRequest {
+  string session_id = 1;
+}
+
+message CommitRegionsResponse {
+  bool accepted = 1;
+}
+
+message VerifyInnerProofsRequest {
+  string session_id = 1;
+}
+
+message VerifyInnerProofsResponse {
+  bool verified = 1;
+}
+
+message OuterChallenge {
+  string region_id = 1;
+  repeated uint64 leaf_indices = 2;
+}
+
+message ChallengeOuterRequest {
+  string session_id = 1;
+  repeated OuterChallenge challenges = 2;
+}
+
+message OuterOpening {
+  string region_id = 1;
+  uint64 leaf_index = 2;
+  bytes leaf_bytes = 3;
+  repeated bytes auth_path = 4;
+}
+
+message ChallengeOuterResponse {
+  repeated OuterOpening openings = 1;
+  uint32 response_ms = 2;
+}
+
+message VerifyOuterRequest {
+  string session_id = 1;
+}
+
+message VerifyOuterResponse {
+  bool verified = 1;
+}
+
+message FinalizeRequest {
+  string session_id = 1;
+}
+
+message FinalizeResponse {
+  bool accepted = 1;
+  string verdict = 2;
+}
+
+message CleanupRequest {
+  string session_id = 1;
+}
+
+message CleanupResponse {
+  bool cleaned = 1;
+  string cleanup_status = 2;
+}
+
