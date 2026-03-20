@@ -6,7 +6,8 @@
 - Official upstream vendoring and integrity controls: complete
 - Vendored upstream Rust workspace validation: complete
 - Real Python-callable vendored Filecoin bridge: complete
-- Host-memory PoSE: not started
+- Canonical PoRep unit serialization: complete on the Python-owned path
+- Host-memory PoSE: complete
 - HBM and hybrid modes: not started
 - Scale-out and parity-gated promotion: not started
 
@@ -50,7 +51,15 @@ Tasks:
 Acceptance:
 - the canonical PoRep payload format is stable, documented, and covered by
   tests;
-- both Python and Rust can agree on the same serialized bytes for a PoRep unit.
+- real vendored bridge artifacts round-trip through the canonical serializer.
+
+Status:
+- complete on the Python-owned path;
+- the canonical PoRep-unit manifest, deterministic CBOR encoding, fixed blob
+  ordering, and aligned byte layout are implemented;
+- `minimal`, `replica`, and `full-cache` profiles are modeled, with automatic
+  `minimal` unit construction from the real bridge artifact;
+- fixtures, tamper checks, and real-bridge round-trip coverage are in place.
 
 ## Milestone 3: Host-Memory PoSE
 
@@ -67,6 +76,23 @@ Acceptance:
 - a host-only session succeeds only when both the inner Filecoin proof and the
   outer timed storage proof succeed;
 - replay, partial overwrite, wrong-byte, and timeout tests fail correctly.
+
+Status:
+- complete;
+- `pose verifier run --profile dev-small` executes a real local host-only
+  session with a verifier-owned host lease, canonical PoRep-unit materialization,
+  deterministic session-plan-bound tail filler, per-region Merkle commitment,
+  challenge verification, deadline enforcement, and cleanup;
+- the real CLI path routes materialization and challenge openings through a
+  prover worker subprocess rather than doing prover work in the verifier
+  process;
+- host sessions now validate the returned region manifest against the actual
+  leased bytes before accepting the outer proof;
+- adversarial host-memory coverage now includes replayed openings under a new
+  session nonce, wrong outer bytes, partial overwrite, sparse writes, timeout,
+  mismatch between declared and actual payload length, insufficient real-PoRep
+  ratio, and cleanup failure reporting;
+- Phase 1 is complete on the current host-only `minimal` profile path.
 
 ## Milestone 4: Single-H100 HBM
 

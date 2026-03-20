@@ -19,8 +19,8 @@ class ProverService:
                 "note": str(error),
             }
         return {
-            "status": "phase0-bridge-ready",
-            "supports_host_memory": False,
+            "status": "phase1-host-complete",
+            "supports_host_memory": True,
             "supports_gpu_hbm": False,
             "supports_real_filecoin_reference": bool(
                 bridge_status.get("supports_real_filecoin_reference", False)

@@ -1,4 +1,6 @@
+use std::collections::BTreeMap;
 use std::io::{Seek, Write};
+use std::time::Instant;
 
 use anyhow::{ensure, Context, Result};
 use filecoin_proofs::{
@@ -70,6 +72,7 @@ struct SealArtifact {
     comm_d_hex: String,
     comm_r_hex: String,
     proof_hex: String,
+    inner_timings_ms: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -196,7 +199,9 @@ fn seal(request: SealRequest) -> Result<SealArtifact> {
 
     let sealed_sector_file = NamedTempFile::new().context("failed to create sealed sector file")?;
     let cache_dir = tempdir().context("failed to create cache directory")?;
+    let mut inner_timings_ms = BTreeMap::new();
 
+    let pre_commit_phase1_started = Instant::now();
     let pre_commit_phase1 = seal_pre_commit_phase1::<_, _, _, SectorShape2KiB>(
         &config,
         cache_dir.path(),
@@ -208,7 +213,12 @@ fn seal(request: SealRequest) -> Result<SealArtifact> {
         &piece_infos,
     )
     .context("seal_pre_commit_phase1 failed")?;
+    inner_timings_ms.insert(
+        "seal_pre_commit_phase1".to_string(),
+        pre_commit_phase1_started.elapsed().as_millis() as u64,
+    );
 
+    let pre_commit_phase2_started = Instant::now();
     let pre_commit = seal_pre_commit_phase2(
         &config,
         pre_commit_phase1,
@@ -216,7 +226,12 @@ fn seal(request: SealRequest) -> Result<SealArtifact> {
         sealed_sector_file.path(),
     )
     .context("seal_pre_commit_phase2 failed")?;
+    inner_timings_ms.insert(
+        "seal_pre_commit_phase2".to_string(),
+        pre_commit_phase2_started.elapsed().as_millis() as u64,
+    );
 
+    let commit_phase1_started = Instant::now();
     let commit_phase1 = seal_commit_phase1::<_, SectorShape2KiB>(
         &config,
         cache_dir.path(),
@@ -229,11 +244,21 @@ fn seal(request: SealRequest) -> Result<SealArtifact> {
         &piece_infos,
     )
     .context("seal_commit_phase1 failed")?;
+    inner_timings_ms.insert(
+        "seal_commit_phase1".to_string(),
+        commit_phase1_started.elapsed().as_millis() as u64,
+    );
 
+    let commit_phase2_started = Instant::now();
     let commit = seal_commit_phase2(&config, commit_phase1, prover_id, sector_id)
         .context("seal_commit_phase2 failed")?;
+    inner_timings_ms.insert(
+        "seal_commit_phase2".to_string(),
+        commit_phase2_started.elapsed().as_millis() as u64,
+    );
 
     let verified_after_seal = if verify_after_seal {
+        let verify_started = Instant::now();
         verify_seal::<SectorShape2KiB>(
             &config,
             pre_commit.comm_r,
@@ -244,7 +269,13 @@ fn seal(request: SealRequest) -> Result<SealArtifact> {
             seed,
             &commit.proof,
         )
-        .context("verify_seal failed")?
+        .context("verify_seal failed")
+        .inspect(|_| {
+            inner_timings_ms.insert(
+                "verify_seal".to_string(),
+                verify_started.elapsed().as_millis() as u64,
+            );
+        })?
     } else {
         false
     };
@@ -269,6 +300,7 @@ fn seal(request: SealRequest) -> Result<SealArtifact> {
         comm_d_hex: hex::encode(pre_commit.comm_d),
         comm_r_hex: hex::encode(pre_commit.comm_r),
         proof_hex: hex::encode(commit.proof),
+        inner_timings_ms,
     })
 }
 

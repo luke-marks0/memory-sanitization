@@ -13,12 +13,12 @@ authors = [
   {name = "Repository maintainers"},
 ]
 dependencies = [
+  "cbor2==5.6.5",
   "PyYAML==6.0.2",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "cbor2==5.6.5",
   "grpcio==1.71.0",
   "grpcio-tools==1.71.0",
   "maturin==1.8.2",
@@ -37,4 +37,3 @@ packages = ["src/pose"]
 pythonpath = ["src"]
 addopts = "-ra"
 testpaths = ["tests"]
-

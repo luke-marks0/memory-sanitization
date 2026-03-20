@@ -12,13 +12,17 @@ def _print_json(payload: dict[str, object]) -> None:
 
 
 def handle_run(args: argparse.Namespace) -> int:
+    payload = {
+        "plan": prepare_run(args.profile),
+        "result": placeholder_result(args.profile),
+    }
     _print_json(
         {
-            "plan": prepare_run(args.profile),
-            "result": placeholder_result(args.profile),
+            "plan": payload["plan"],
+            "result": payload["result"],
         }
     )
-    return 2
+    return 0 if payload["result"].get("verdict") == "SUCCESS" else 1
 
 
 def handle_matrix(args: argparse.Namespace) -> int:

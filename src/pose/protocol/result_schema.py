@@ -26,12 +26,19 @@ class SessionResult:
     verdict: str
     session_id: str
     profile_name: str
+    session_nonce: str = ""
+    session_plan_root: str = ""
+    session_manifest_root: str = ""
     host_total_bytes: int = 0
     host_usable_bytes: int = 0
     host_covered_bytes: int = 0
     gpu_devices: list[int] = field(default_factory=list)
     gpu_usable_bytes_by_device: dict[str, int] = field(default_factory=dict)
     gpu_covered_bytes_by_device: dict[str, int] = field(default_factory=dict)
+    region_roots: dict[str, str] = field(default_factory=dict)
+    region_manifest_roots: dict[str, str] = field(default_factory=dict)
+    region_payload_bytes_by_region: dict[str, int] = field(default_factory=dict)
+    challenge_indices_by_region: dict[str, list[int]] = field(default_factory=dict)
     real_porep_bytes: int = 0
     tail_filler_bytes: int = 0
     real_porep_ratio: float = 0.0
@@ -75,4 +82,3 @@ def bootstrap_result(profile_name: str, note: str | None = None) -> SessionResul
     if note:
         result.notes.append(note)
     return result
-

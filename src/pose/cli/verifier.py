@@ -21,12 +21,13 @@ def handle_run(args: argparse.Namespace) -> int:
         print("Plan-file execution is not implemented in the foundation phase.", file=sys.stderr)
         return 2
     profile = load_profile(args.profile)
-    result = VerifierService().run_placeholder(
-        profile,
-        note="Verifier run flow is scaffolded but not implemented.",
-    )
+    result = VerifierService().run_session(profile)
     _print_json(result.to_dict())
-    return 2
+    if result.verdict == "SUCCESS":
+        return 0
+    if result.verdict == "PROTOCOL_ERROR":
+        return 2
+    return 1
 
 
 def handle_rechallenge(args: argparse.Namespace) -> int:
@@ -66,4 +67,3 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     )
     verify_record_parser.add_argument("path")
     verify_record_parser.set_defaults(func=handle_verify_record)
-

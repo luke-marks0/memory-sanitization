@@ -563,7 +563,7 @@ Constraints:
 - tail filler must be derived from:
   - session nonce,
   - region identifier,
-  - session manifest root;
+  - session plan root;
 - tail filler must be clearly counted separately from real-PoRep bytes;
 - tail filler must be limited to the smaller of:
   - one outer Merkle leaf,

@@ -63,8 +63,15 @@ Current implementation state:
 - Phase 0 foundation is complete: the repo vendors upstream Filecoin Rust,
   validates the vendored snapshot, and exposes a real Python-callable bridge for
   a genuine 2 KiB seal plus verify flow.
-- Phase 1 and beyond remain incomplete: canonical PoRep serialization,
-  host-memory outer proof, HBM, hybrid, and scale-out are still ahead.
+- Canonical PoRep-unit serialization is implemented on the Python-owned path;
+  see `docs/serialization.md`.
+- Phase 1 host-memory PoSE is complete on the current host-only path:
+  `pose verifier run --profile dev-small` executes a real local host session
+  through a prover worker subprocess, validates the inner Filecoin proof,
+  validates the outer host-memory proof, enforces deadlines, reports tail
+  filler honestly, and passes the required adversarial host-memory tests.
+- Later phases remain ahead: HBM, hybrid, scale-out, and parity-gated Python
+  promotion are not implemented yet.
 
 ## Repository shape
 
@@ -84,6 +91,8 @@ repo/
   - vendored upstream Filecoin Rust workspace snapshot
 - `rust/pose_filecoin_bridge/`
   - thin Rust bridge exposing the official seal/verify path to Python
+- `src/pose/filecoin/porep_unit.py`
+  - canonical PoRep-unit manifest and deterministic serialization logic
 - `src/pose/prover/`
   - prover service, region materialization, outer proof response
 - `src/pose/verifier/`

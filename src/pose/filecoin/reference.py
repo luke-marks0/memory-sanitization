@@ -82,6 +82,7 @@ class SealArtifact:
     comm_d_hex: str
     comm_r_hex: str
     proof_hex: str
+    inner_timings_ms: dict[str, int]
 
     def to_bridge_payload(self) -> dict[str, object]:
         return asdict(self)
@@ -102,3 +103,21 @@ class VendoredFilecoinReference:
         payload = artifact.to_bridge_payload()
         result = json.loads(self._module.verify_json(json.dumps(payload)))
         return bool(result["verified"])
+
+    def seal_porep_unit(
+        self,
+        request: SealRequest | None = None,
+        *,
+        storage_profile: str = "minimal",
+        leaf_alignment_bytes: int = 4096,
+        extra_blobs: dict[str, bytes] | None = None,
+    ) -> Any:
+        from pose.filecoin.porep_unit import build_porep_unit_from_seal_artifact
+
+        artifact = self.seal(request=request)
+        return build_porep_unit_from_seal_artifact(
+            artifact,
+            storage_profile=storage_profile,
+            leaf_alignment_bytes=leaf_alignment_bytes,
+            extra_blobs=extra_blobs,
+        )

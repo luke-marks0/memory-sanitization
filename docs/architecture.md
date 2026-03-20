@@ -63,7 +63,7 @@ The spec-defined order remains the execution order:
 
 ## Current Status
 
-This document reflects the post-vendoring Phase 0 state:
+This document reflects the completed Phase 1 host-only state:
 
 - repository layout now matches the normative shape;
 - documentation set exists and is aligned to the spec;
@@ -73,6 +73,19 @@ This document reflects the post-vendoring Phase 0 state:
   repository;
 - the Rust bridge owns the first real Python-callable seal and verify path for a
   2 KiB sector;
-- Phase 0 is complete;
-- prover, verifier, benchmark execution, canonical PoRep serialization, and
-  outer-proof flows are still incomplete beyond Phase 0.
+- canonical PoRep-unit serialization is now defined and implemented on the
+  Python-owned path;
+- a local host-only verifier session now exists for the implemented `minimal`
+  host profile path, including verifier-owned host leasing, deterministic
+  session-plan-bound tail filler, Merkle commitment, challenge openings,
+  deadline enforcement, and cleanup;
+- the host-only CLI path uses a prover worker subprocess for materialization and
+  challenge responses, while the verifier keeps policy, challenge selection,
+  manifest validation, and verdict logic;
+- the host session result artifact now records both `session_plan_root` and
+  `session_manifest_root`;
+- adversarial host-memory tests cover replayed openings, wrong outer bytes,
+  partial overwrite, sparse writes, timeout, payload-length mismatch,
+  insufficient real-PoRep ratio, and cleanup failure reporting;
+- Phase 0 and Phase 1 are complete;
+- later HBM, hybrid, scale-out, and parity-gated promotion work remains ahead.
