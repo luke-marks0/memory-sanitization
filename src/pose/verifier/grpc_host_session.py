@@ -6,7 +6,7 @@ from time import perf_counter
 from pose.benchmarks.profiles import BenchmarkProfile
 from pose.common.errors import ProtocolError, ResourceFailure
 from pose.common.timing import TimingTracker
-from pose.filecoin.reference import VendoredFilecoinReference
+from pose.filecoin.reference import VendoredFilecoinReference, summarize_cpu_fallbacks
 from pose.protocol.messages import CleanupPolicy, SessionPlan
 from pose.protocol.region_payloads import (
     RegionManifest,
@@ -166,6 +166,9 @@ def run_host_session_via_grpc(
         verifier = VendoredFilecoinReference()
         tracker.start("inner_verify")
         artifacts = artifacts_by_region[region_id]
+        result.cpu_fallback_detected, result.cpu_fallback_events = summarize_cpu_fallbacks(artifacts)
+        if result.cpu_fallback_detected:
+            result.notes.append("CPU fallback detected during inner proof generation.")
         result.inner_filecoin_verified = all(verifier.verify(artifact) for artifact in artifacts)
         tracker.stop("inner_verify")
         for artifact in artifacts:

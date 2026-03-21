@@ -44,6 +44,8 @@ def test_real_vendored_filecoin_bridge_seals_and_verifies() -> None:
     assert artifact.sector_size == 2048
     assert artifact.piece_size > 0
     assert "seal_pre_commit_phase1" in artifact.inner_timings_ms
+    assert isinstance(artifact.cpu_fallback_detected, bool)
+    assert isinstance(artifact.cpu_fallback_events, list)
     assert "sealed_replica" in (artifact.extra_blobs_hex or {})
     assert parsed.manifest.storage_profile == "minimal"
     assert parsed.manifest.comm_r_hex == artifact.comm_r_hex

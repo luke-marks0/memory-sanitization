@@ -221,6 +221,8 @@ def run_benchmark(
                     f"session_id={result.session_id}",
                     f"verdict={result.verdict}",
                     f"success={str(result.success).lower()}",
+                    f"cpu_fallback={str(result.cpu_fallback_detected).lower()}",
+                    f"cpu_fallback_events={len(result.cpu_fallback_events)}",
                     f"response_ms={result.response_ms}",
                     f"total_ms={result.timings_ms['total']}",
                     f"verifier_cpu_ms={cpu_ms}",

@@ -11,7 +11,7 @@ from pose.common.errors import ProtocolError, ResourceFailure
 from pose.common.merkle import commit_payload
 from pose.common.timing import TimingTracker
 from pose.filecoin.porep_unit import build_porep_unit_from_seal_artifact
-from pose.filecoin.reference import VendoredFilecoinReference
+from pose.filecoin.reference import SealArtifact, VendoredFilecoinReference, summarize_cpu_fallbacks
 from pose.protocol.host_worker_protocol import WORKER_PROTOCOL_VERSION
 from pose.protocol.messages import CleanupPolicy, SectorPlanEntry, SessionPlan
 from pose.protocol.region_payloads import (
@@ -365,7 +365,10 @@ def run_host_session(
                 },
                 lease_fd=lease.fd,
             )
-            artifacts = list(resident_response["unit_artifacts"])  # type: ignore[arg-type]
+            artifacts = [
+                SealArtifact(**payload)
+                for payload in list(resident_response["unit_artifacts"])  # type: ignore[arg-type]
+            ]
             region_manifest_payload = dict(resident_response["region_manifest"])  # type: ignore[arg-type]
             worker_timings = dict(resident_response["timings_ms"])  # type: ignore[arg-type]
             resident_socket_path = str(resident_response["socket_path"])
@@ -377,12 +380,10 @@ def run_host_session(
             tracker.values["object_serialization"] = int(worker_timings["object_serialization"])
             tracker.values["outer_tree_build"] = int(worker_timings.get("outer_tree_build", 0))
             tracker.values["data_generation"] = int(worker_timings["materialize_total"])
-            for payload in artifacts:
-                inner_timings = payload.get("inner_timings_ms", {})
-                if isinstance(inner_timings, dict):
-                    for key, value in inner_timings.items():
-                        if key in tracker.values:
-                            tracker.values[key] += int(value)
+            for artifact in artifacts:
+                for key, value in artifact.inner_timings_ms.items():
+                    if key in tracker.values:
+                        tracker.values[key] += int(value)
         elif reference is None:
             artifact_payloads, region_manifest_payload, worker_timings = _materialize_in_subprocess(
                 session_id=result.session_id,
@@ -396,7 +397,7 @@ def run_host_session(
                 lease_fd=lease.fd,
                 usable_bytes=lease.record.usable_bytes,
             )
-            artifacts = artifact_payloads
+            artifacts = [SealArtifact(**payload) for payload in artifact_payloads]
             tracker.stop("copy_to_host")
             tracker.stop("object_serialization")
             tracker.stop("data_generation")
@@ -404,12 +405,10 @@ def run_host_session(
             tracker.values["object_serialization"] = int(worker_timings["object_serialization"])
             tracker.values["outer_tree_build"] = int(worker_timings.get("outer_tree_build", 0))
             tracker.values["data_generation"] = int(worker_timings["materialize_total"])
-            for payload in artifacts:
-                inner_timings = payload.get("inner_timings_ms", {})
-                if isinstance(inner_timings, dict):
-                    for key, value in inner_timings.items():
-                        if key in tracker.values:
-                            tracker.values[key] += int(value)
+            for artifact in artifacts:
+                for key, value in artifact.inner_timings_ms.items():
+                    if key in tracker.values:
+                        tracker.values[key] += int(value)
         else:
             local_timings: dict[str, int] = {}
             artifacts, region_manifest, payload, local_object_serialization_ms = _materialize_locally(
@@ -436,8 +435,12 @@ def run_host_session(
             }
             for artifact in artifacts:
                 for key, value in artifact.inner_timings_ms.items():
-                        if key in tracker.values:
-                            tracker.values[key] += int(value)
+                    if key in tracker.values:
+                        tracker.values[key] += int(value)
+
+        result.cpu_fallback_detected, result.cpu_fallback_events = summarize_cpu_fallbacks(artifacts)
+        if result.cpu_fallback_detected:
+            result.notes.append("CPU fallback detected during inner proof generation.")
 
         payload = lease.read()
         region_manifest = RegionManifest.from_cbor_object(region_manifest_payload)
@@ -454,14 +457,7 @@ def run_host_session(
         )
 
         tracker.start("inner_verify")
-        if reference is None:
-            from pose.filecoin.reference import SealArtifact
-
-            result.inner_filecoin_verified = all(
-                verifier.verify(SealArtifact(**payload)) for payload in artifacts
-            )
-        else:
-            result.inner_filecoin_verified = all(verifier.verify(artifact) for artifact in artifacts)
+        result.inner_filecoin_verified = all(verifier.verify(artifact) for artifact in artifacts)
         tracker.stop("inner_verify")
 
         result.challenge_count = challenge_count_for_policy(

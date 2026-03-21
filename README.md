@@ -266,6 +266,17 @@ make build
 This builds the Python package environment and compiles the Rust bridge
 extension used by the real vendored Filecoin reference path.
 
+`scripts/build_bridge.py` now selects an upstream backend explicitly:
+
+- `cuda-opencl` when `nvcc` and OpenCL development files are available;
+- `cuda` when `nvcc` is available but OpenCL development files are not;
+- `opencl` when only OpenCL development files are available;
+- `cpu` only when neither GPU backend can be compiled locally.
+
+Override that selection with `POSE_FILECOIN_BRIDGE_BACKEND=cpu|opencl|cuda|cuda-opencl`.
+When both GPU backends are compiled, upstream runtime selection still follows
+`FIL_PROOFS_GPU_FRAMEWORK`, with CUDA preferred when unset.
+
 ### Run tests
 
 ```bash
@@ -281,7 +292,9 @@ make test-bridge
 
 This hydrates the required proof artifacts, builds the Rust extension, and runs
 an end-to-end Python smoke test that seals and verifies one real 2 KiB Filecoin
-sector through the vendored upstream path.
+sector through the vendored upstream path. On generic CI hosts this compiles the
+upstream OpenCL backend; on CUDA-equipped machines it compiles both upstream GPU
+backends and lets the upstream runtime prefer CUDA.
 
 ### Verify the vendored upstream Rust workspace
 

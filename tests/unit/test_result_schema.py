@@ -17,7 +17,20 @@ def test_bootstrap_result_contains_required_fields() -> None:
 
 def test_from_dict_rejects_missing_required_fields() -> None:
     payload = bootstrap_result("dev-small").to_dict()
-    payload.pop("host_total_bytes")
+    payload.pop("profile_name")
 
-    with pytest.raises(ProtocolError, match="host_total_bytes"):
+    with pytest.raises(ProtocolError, match="profile_name"):
         SessionResult.from_dict(payload)
+
+
+def test_from_dict_accepts_missing_defaulted_fields() -> None:
+    payload = bootstrap_result("dev-small").to_dict()
+    payload.pop("host_total_bytes")
+    payload.pop("cpu_fallback_detected")
+    payload.pop("cpu_fallback_events")
+
+    result = SessionResult.from_dict(payload)
+
+    assert result.host_total_bytes == 0
+    assert result.cpu_fallback_detected is False
+    assert result.cpu_fallback_events == []

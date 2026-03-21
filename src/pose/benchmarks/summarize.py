@@ -50,19 +50,28 @@ def summarize_session_results(
     per_device_hbm_coverage: dict[str, list[int]] = {}
 
     success_count = 0
+    cpu_fallback_run_count = 0
     deadline_miss_count = 0
     coverage_fractions: list[float] = []
     real_porep_ratios: list[float] = []
     rechallenge_response_ms: list[int] = []
+    cpu_fallback_events: list[str] = []
+    seen_cpu_fallback_events: set[str] = set()
 
     for result in results:
         verdicts[result.verdict] = verdicts.get(result.verdict, 0) + 1
         success_count += int(result.success)
+        cpu_fallback_run_count += int(result.cpu_fallback_detected)
         deadline_miss_count += int(result.verdict == "TIMEOUT")
         coverage_fractions.append(float(result.coverage_fraction))
         real_porep_ratios.append(float(result.real_porep_ratio))
         if result.run_class == "rechallenge":
             rechallenge_response_ms.append(int(result.response_ms))
+        for event in result.cpu_fallback_events:
+            if event in seen_cpu_fallback_events:
+                continue
+            seen_cpu_fallback_events.add(event)
+            cpu_fallback_events.append(str(event))
 
         for key, value in result.timings_ms.items():
             timings.setdefault(key, []).append(int(value))
@@ -73,6 +82,11 @@ def summarize_session_results(
     return {
         "result_count": total,
         "success_rate": (success_count / total) if total else 0.0,
+        "cpu_fallback": {
+            "detected_run_count": cpu_fallback_run_count,
+            "detected_run_rate": (cpu_fallback_run_count / total) if total else 0.0,
+            "unique_events": cpu_fallback_events,
+        },
         "deadline_miss_rate": (deadline_miss_count / total) if total else 0.0,
         "verdict_counts": verdicts,
         "coverage_fraction": _series_summary(coverage_fractions),

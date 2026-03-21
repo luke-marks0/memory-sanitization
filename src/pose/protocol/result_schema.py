@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import MISSING, asdict, dataclass, field, fields
 from typing import Any
 
 from pose.common.env import capture_environment
@@ -49,6 +49,8 @@ class SessionResult:
     real_porep_ratio: float = 0.0
     coverage_fraction: float = 0.0
     inner_filecoin_verified: bool = False
+    cpu_fallback_detected: bool = False
+    cpu_fallback_events: list[str] = field(default_factory=list)
     outer_pose_verified: bool = False
     challenge_leaf_size: int = 4096
     challenge_policy: dict[str, int | float] = field(default_factory=dict)
@@ -90,7 +92,11 @@ class SessionResult:
         return result
 
 
-REQUIRED_RESULT_FIELDS = tuple(item.name for item in fields(SessionResult))
+REQUIRED_RESULT_FIELDS = tuple(
+    item.name
+    for item in fields(SessionResult)
+    if item.default is MISSING and item.default_factory is MISSING
+)
 
 
 def bootstrap_result(profile_name: str, note: str | None = None) -> SessionResult:

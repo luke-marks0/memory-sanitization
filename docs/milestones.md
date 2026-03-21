@@ -33,7 +33,9 @@ Acceptance:
 
 Status:
 - complete;
-- the bridge is built through `scripts/build_bridge.py`;
+- the bridge is built through `scripts/build_bridge.py`, which now selects an
+  explicit upstream backend (`cuda-opencl`, `cuda`, `opencl`, or `cpu`)
+  instead of forcing a CPU-only proof build;
 - `VendoredFilecoinReference` seals and verifies a real upstream-backed 2 KiB
   sector artifact;
 - `make test-bridge` and the CI `bridge-smoke` job validate the end-to-end

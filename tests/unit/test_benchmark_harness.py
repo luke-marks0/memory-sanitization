@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from pose.benchmarks.harness import run_benchmark
@@ -22,6 +23,11 @@ def test_run_benchmark_archives_required_artifacts(
         result.response_ms = 20 + call_count
         result.coverage_fraction = 0.92
         result.real_porep_ratio = 1.0
+        result.cpu_fallback_detected = (call_count % 2) == 0
+        if result.cpu_fallback_detected:
+            result.cpu_fallback_events = [
+                "[WARN:bellperson::gpu] GPU Multiexp kernel failed! Falling back to CPU."
+            ]
         result.gpu_devices = [0]
         result.gpu_usable_bytes_by_device = {"0": 2000}
         result.gpu_covered_bytes_by_device = {"0": 1800 + call_count}
@@ -53,8 +59,20 @@ def test_run_benchmark_archives_required_artifacts(
     summary = payload["summary"]
     assert summary["result_count"] == 3
     assert summary["success_rate"] == 1.0
+    assert summary["cpu_fallback"]["detected_run_count"] == 1
+    assert summary["cpu_fallback"]["detected_run_rate"] == (1 / 3)
     assert summary["deadline_miss_rate"] == 0.0
     assert summary["timings_ms"]["copy_to_hbm"]["mean"] > 0.0
     assert summary["timings_ms"]["challenge_response"]["p95"] >= 21.0
     assert summary["per_device_hbm_coverage_bytes"]["0"]["mean"] > 1800.0
     assert summary["verifier_cpu_time_ms"]["mean"] >= 0.0
+
+    benchmark_log = (run_root / "benchmark.log").read_text(encoding="utf-8")
+    assert "cpu_fallback=true" in benchmark_log
+    assert "cpu_fallback_events=1" in benchmark_log
+
+    second_run = json.loads((run_root / "run-002.result.json").read_text(encoding="utf-8"))
+    assert second_run["cpu_fallback_detected"] is True
+    assert second_run["cpu_fallback_events"] == [
+        "[WARN:bellperson::gpu] GPU Multiexp kernel failed! Falling back to CPU."
+    ]

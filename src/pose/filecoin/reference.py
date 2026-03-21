@@ -4,9 +4,9 @@ import importlib
 import json
 import subprocess
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Iterable, Protocol
 
 from pose.common.errors import ResourceFailure
 
@@ -83,6 +83,8 @@ class SealArtifact:
     comm_r_hex: str
     proof_hex: str
     inner_timings_ms: dict[str, int]
+    cpu_fallback_detected: bool = False
+    cpu_fallback_events: list[str] = field(default_factory=list)
     extra_blobs_hex: dict[str, str] | None = None
 
     def to_bridge_payload(self) -> dict[str, object]:
@@ -122,3 +124,24 @@ class VendoredFilecoinReference:
             leaf_alignment_bytes=leaf_alignment_bytes,
             extra_blobs=extra_blobs,
         )
+
+
+def summarize_cpu_fallbacks(artifacts: Iterable[SealArtifact]) -> tuple[bool, list[str]]:
+    detected = False
+    events: list[str] = []
+    seen: set[str] = set()
+    for artifact in artifacts:
+        artifact_detected = bool(
+            getattr(artifact, "cpu_fallback_detected", False)
+            or getattr(artifact, "cpu_fallback_events", ())
+        )
+        detected = detected or artifact_detected
+        for event in getattr(artifact, "cpu_fallback_events", ()):
+            normalized = str(event)
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            events.append(normalized)
+    if detected and not events:
+        events.append("CPU fallback detected during inner proof generation.")
+    return detected, events

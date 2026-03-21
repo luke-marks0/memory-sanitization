@@ -1,0 +1,10 @@
+{
+  "cargo": "/root/.cargo/bin/cargo",
+  "head_commit": "dd797b83ea3c6fd9cd91c2caefeb1efb508cafa8",
+  "head_status": "M README.md\n M docs/milestones.md\n M rust/pose_filecoin_bridge/Cargo.lock\n M rust/pose_filecoin_bridge/Cargo.toml\n M rust/pose_filecoin_bridge/src/lib.rs\n M scripts/build_bridge.py\n M src/pose/benchmarks/harness.py\n M src/pose/benchmarks/summarize.py\n M src/pose/filecoin/reference.py\n M src/pose/protocol/result_schema.py\n M src/pose/verifier/grpc_gpu_session.py\n M src/pose/verifier/grpc_host_session.py\n M src/pose/verifier/host_session.py\n M tests/e2e/test_real_filecoin_bridge.py\n M tests/performance/test_benchmark_reporting.py\n M tests/unit/test_benchmark_harness.py\n M tests/unit/test_result_schema.py\n?? .pose/benchmarks/dev-small/20260321T052354Z/",
+  "platform": "Linux-6.8.0-1045-gcp-x86_64-with-glibc2.39",
+  "python_executable": "/workspace/memory-sanitization/.venv/bin/python3",
+  "python_version": "3.12.13",
+  "rust_toolchain": "[toolchain]\nchannel = \"1.93.1\"\ncomponents = [\"clippy\", \"rustfmt\"]\nprofile = \"minimal\"\n",
+  "uv": "/usr/local/bin/uv"
+}

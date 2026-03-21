@@ -1,7 +1,8 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{Seek, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, Once, OnceLock};
 use std::time::Instant;
 
 use anyhow::{ensure, Context, Result};
@@ -10,6 +11,7 @@ use filecoin_proofs::{
     seal_pre_commit_phase1, seal_pre_commit_phase2, verify_seal, Commitment, PieceInfo,
     PoRepConfig, ProverId, SectorShape2KiB, UnpaddedBytesAmount, SECTOR_SIZE_2_KIB,
 };
+use log::{Level, LevelFilter, Log, Metadata, Record};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -20,6 +22,10 @@ use tempfile::{tempdir, NamedTempFile};
 const BRIDGE_STATUS: &str = "phase0-real-filecoin-bridge";
 const REGISTERED_SEAL_PROOF_2KIB_V1_2: u64 = 5;
 const DEFAULT_SECTOR_ID: u64 = 4242;
+static BRIDGE_LOGGER: BridgeLogger = BridgeLogger;
+static BRIDGE_LOGGER_INIT: Once = Once::new();
+static BRIDGE_LOG_STATE: OnceLock<Mutex<BridgeLogState>> = OnceLock::new();
+static BRIDGE_OPERATION_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Serialize)]
 struct BridgeStatus {
@@ -30,6 +36,7 @@ struct BridgeStatus {
     api_version: &'static str,
     registered_seal_proof: u64,
     porep_id_hex: String,
+    compiled_backends: Vec<&'static str>,
 }
 
 impl BridgeStatus {
@@ -42,6 +49,7 @@ impl BridgeStatus {
             api_version: "V1_2_0",
             registered_seal_proof: REGISTERED_SEAL_PROOF_2KIB_V1_2,
             porep_id_hex: hex::encode(default_porep_id()),
+            compiled_backends: compiled_backends(),
         }
     }
 }
@@ -76,6 +84,10 @@ struct SealArtifact {
     proof_hex: String,
     inner_timings_ms: BTreeMap<String, u64>,
     #[serde(default)]
+    cpu_fallback_detected: bool,
+    #[serde(default)]
+    cpu_fallback_events: Vec<String>,
+    #[serde(default)]
     extra_blobs_hex: BTreeMap<String, String>,
 }
 
@@ -86,6 +98,36 @@ struct VerifyResult {
     sector_id: u64,
     comm_d_hex: String,
     comm_r_hex: String,
+}
+
+#[derive(Default)]
+struct BridgeLogState {
+    active: bool,
+    warnings: Vec<String>,
+}
+
+struct BridgeLogger;
+
+impl Log for BridgeLogger {
+    fn enabled(&self, metadata: &Metadata<'_>) -> bool {
+        metadata.level() <= Level::Warn
+    }
+
+    fn log(&self, record: &Record<'_>) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+        if let Ok(mut state) = bridge_log_state().lock() {
+            if !state.active {
+                return;
+            }
+            state
+                .warnings
+                .push(format!("[{}:{}] {}", record.level(), record.target(), record.args()));
+        }
+    }
+
+    fn flush(&self) {}
 }
 
 fn default_porep_id() -> [u8; 32] {
@@ -104,6 +146,91 @@ fn default_piece_bytes(size: usize) -> Vec<u8> {
 
 fn default_bytes(fill: u8) -> [u8; 32] {
     [fill; 32]
+}
+
+fn compiled_backends() -> Vec<&'static str> {
+    let mut backends = Vec::new();
+    if cfg!(feature = "cuda") {
+        backends.push("cuda");
+    }
+    if cfg!(feature = "opencl") {
+        backends.push("opencl");
+    }
+    if backends.is_empty() {
+        backends.push("cpu");
+    }
+    backends
+}
+
+fn bridge_log_state() -> &'static Mutex<BridgeLogState> {
+    BRIDGE_LOG_STATE.get_or_init(|| Mutex::new(BridgeLogState::default()))
+}
+
+fn bridge_operation_lock() -> &'static Mutex<()> {
+    BRIDGE_OPERATION_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn ensure_bridge_logger() {
+    BRIDGE_LOGGER_INIT.call_once(|| {
+        let _ = log::set_logger(&BRIDGE_LOGGER);
+        log::set_max_level(LevelFilter::Warn);
+    });
+}
+
+fn capture_runtime_warnings<T>(operation: impl FnOnce() -> Result<T>) -> Result<(T, Vec<String>)> {
+    ensure_bridge_logger();
+    let _operation_guard = bridge_operation_lock()
+        .lock()
+        .expect("bridge operation lock poisoned");
+    {
+        let mut state = bridge_log_state()
+            .lock()
+            .expect("bridge log state lock poisoned");
+        state.active = true;
+        state.warnings.clear();
+    }
+
+    let result = operation();
+    let warnings = {
+        let mut state = bridge_log_state()
+            .lock()
+            .expect("bridge log state lock poisoned");
+        state.active = false;
+        std::mem::take(&mut state.warnings)
+    };
+    result.map(|value| (value, warnings))
+}
+
+fn has_compiled_gpu_backends() -> bool {
+    compiled_backends().iter().any(|backend| *backend != "cpu")
+}
+
+fn bellman_no_gpu_forces_cpu() -> bool {
+    has_compiled_gpu_backends()
+        && std::env::var("BELLMAN_NO_GPU")
+            .map(|value| value != "0")
+            .unwrap_or(false)
+}
+
+fn extract_cpu_fallback_events(warnings: &[String]) -> Vec<String> {
+    let mut events = BTreeSet::new();
+    if bellman_no_gpu_forces_cpu() {
+        events.insert(
+            "BELLMAN_NO_GPU forced CPU execution despite compiled GPU backends.".to_string(),
+        );
+    }
+
+    for warning in warnings {
+        let normalized = warning.to_ascii_lowercase();
+        if normalized.contains("falling back to cpu")
+            || normalized.contains("no gpu found")
+            || normalized.contains("cannot instantiate gpu fft kernel")
+            || normalized.contains("cannot instantiate gpu multiexp kernel")
+        {
+            events.insert(warning.clone());
+        }
+    }
+    events.into_iter().collect()
 }
 
 fn decode_hex_value(label: &str, value: &str) -> Result<Vec<u8>> {
@@ -280,140 +407,148 @@ fn collect_extra_blobs(
 }
 
 fn seal(request: SealRequest) -> Result<SealArtifact> {
-    let porep_id = decode_hex_32(
-        "porep_id_hex",
-        request.porep_id_hex.as_deref(),
-        default_porep_id(),
-    )?;
-    let config = PoRepConfig::new_groth16(SECTOR_SIZE_2_KIB, porep_id, ApiVersion::V1_2_0);
-    let prover_id: ProverId = decode_hex_32(
-        "prover_id_hex",
-        request.prover_id_hex.as_deref(),
-        default_bytes(7),
-    )?;
-    let sector_id_value = request.sector_id.unwrap_or(DEFAULT_SECTOR_ID);
-    let sector_id = SectorId::from(sector_id_value);
-    let ticket = decode_hex_32("ticket_hex", request.ticket_hex.as_deref(), default_bytes(1))?;
-    let seed = decode_hex_32("seed_hex", request.seed_hex.as_deref(), default_bytes(2))?;
-    let verify_after_seal = request.verify_after_seal.unwrap_or(true);
-    let piece_bytes = parse_piece_bytes(&request, &config)?;
-    let (piece_info, mut piece_file) = piece_info(&piece_bytes, &config)?;
-    let piece_infos = vec![piece_info.clone()];
-    let mut staged_sector_file =
-        create_staged_sector(&mut piece_file, config.unpadded_bytes_amount())?;
-    staged_sector_file
-        .as_file_mut()
-        .rewind()
-        .context("failed to rewind staged sector file")?;
+    let (mut artifact, warnings) = capture_runtime_warnings(|| {
+        let porep_id = decode_hex_32(
+            "porep_id_hex",
+            request.porep_id_hex.as_deref(),
+            default_porep_id(),
+        )?;
+        let config = PoRepConfig::new_groth16(SECTOR_SIZE_2_KIB, porep_id, ApiVersion::V1_2_0);
+        let prover_id: ProverId = decode_hex_32(
+            "prover_id_hex",
+            request.prover_id_hex.as_deref(),
+            default_bytes(7),
+        )?;
+        let sector_id_value = request.sector_id.unwrap_or(DEFAULT_SECTOR_ID);
+        let sector_id = SectorId::from(sector_id_value);
+        let ticket = decode_hex_32("ticket_hex", request.ticket_hex.as_deref(), default_bytes(1))?;
+        let seed = decode_hex_32("seed_hex", request.seed_hex.as_deref(), default_bytes(2))?;
+        let verify_after_seal = request.verify_after_seal.unwrap_or(true);
+        let piece_bytes = parse_piece_bytes(&request, &config)?;
+        let (piece_info, mut piece_file) = piece_info(&piece_bytes, &config)?;
+        let piece_infos = vec![piece_info.clone()];
+        let mut staged_sector_file =
+            create_staged_sector(&mut piece_file, config.unpadded_bytes_amount())?;
+        staged_sector_file
+            .as_file_mut()
+            .rewind()
+            .context("failed to rewind staged sector file")?;
 
-    let sealed_sector_file = NamedTempFile::new().context("failed to create sealed sector file")?;
-    let cache_dir = tempdir().context("failed to create cache directory")?;
-    let mut inner_timings_ms = BTreeMap::new();
+        let sealed_sector_file = NamedTempFile::new().context("failed to create sealed sector file")?;
+        let cache_dir = tempdir().context("failed to create cache directory")?;
+        let mut inner_timings_ms = BTreeMap::new();
 
-    let pre_commit_phase1_started = Instant::now();
-    let pre_commit_phase1 = seal_pre_commit_phase1::<_, _, _, SectorShape2KiB>(
-        &config,
-        cache_dir.path(),
-        staged_sector_file.path(),
-        sealed_sector_file.path(),
-        prover_id,
-        sector_id,
-        ticket,
-        &piece_infos,
-    )
-    .context("seal_pre_commit_phase1 failed")?;
-    inner_timings_ms.insert(
-        "seal_pre_commit_phase1".to_string(),
-        pre_commit_phase1_started.elapsed().as_millis() as u64,
-    );
-
-    let pre_commit_phase2_started = Instant::now();
-    let pre_commit = seal_pre_commit_phase2(
-        &config,
-        pre_commit_phase1,
-        cache_dir.path(),
-        sealed_sector_file.path(),
-    )
-    .context("seal_pre_commit_phase2 failed")?;
-    inner_timings_ms.insert(
-        "seal_pre_commit_phase2".to_string(),
-        pre_commit_phase2_started.elapsed().as_millis() as u64,
-    );
-
-    let commit_phase1_started = Instant::now();
-    let commit_phase1 = seal_commit_phase1::<_, SectorShape2KiB>(
-        &config,
-        cache_dir.path(),
-        sealed_sector_file.path(),
-        prover_id,
-        sector_id,
-        ticket,
-        seed,
-        pre_commit.clone(),
-        &piece_infos,
-    )
-    .context("seal_commit_phase1 failed")?;
-    inner_timings_ms.insert(
-        "seal_commit_phase1".to_string(),
-        commit_phase1_started.elapsed().as_millis() as u64,
-    );
-
-    let commit_phase2_started = Instant::now();
-    let commit = seal_commit_phase2(&config, commit_phase1, prover_id, sector_id)
-        .context("seal_commit_phase2 failed")?;
-    inner_timings_ms.insert(
-        "seal_commit_phase2".to_string(),
-        commit_phase2_started.elapsed().as_millis() as u64,
-    );
-
-    let verified_after_seal = if verify_after_seal {
-        let verify_started = Instant::now();
-        verify_seal::<SectorShape2KiB>(
+        let pre_commit_phase1_started = Instant::now();
+        let pre_commit_phase1 = seal_pre_commit_phase1::<_, _, _, SectorShape2KiB>(
             &config,
-            pre_commit.comm_r,
-            pre_commit.comm_d,
+            cache_dir.path(),
+            staged_sector_file.path(),
+            sealed_sector_file.path(),
+            prover_id,
+            sector_id,
+            ticket,
+            &piece_infos,
+        )
+        .context("seal_pre_commit_phase1 failed")?;
+        inner_timings_ms.insert(
+            "seal_pre_commit_phase1".to_string(),
+            pre_commit_phase1_started.elapsed().as_millis() as u64,
+        );
+
+        let pre_commit_phase2_started = Instant::now();
+        let pre_commit = seal_pre_commit_phase2(
+            &config,
+            pre_commit_phase1,
+            cache_dir.path(),
+            sealed_sector_file.path(),
+        )
+        .context("seal_pre_commit_phase2 failed")?;
+        inner_timings_ms.insert(
+            "seal_pre_commit_phase2".to_string(),
+            pre_commit_phase2_started.elapsed().as_millis() as u64,
+        );
+
+        let commit_phase1_started = Instant::now();
+        let commit_phase1 = seal_commit_phase1::<_, SectorShape2KiB>(
+            &config,
+            cache_dir.path(),
+            sealed_sector_file.path(),
             prover_id,
             sector_id,
             ticket,
             seed,
-            &commit.proof,
+            pre_commit.clone(),
+            &piece_infos,
         )
-        .context("verify_seal failed")
-        .inspect(|_| {
-            inner_timings_ms.insert(
-                "verify_seal".to_string(),
-                verify_started.elapsed().as_millis() as u64,
-            );
-        })?
-    } else {
-        false
-    };
+        .context("seal_commit_phase1 failed")?;
+        inner_timings_ms.insert(
+            "seal_commit_phase1".to_string(),
+            commit_phase1_started.elapsed().as_millis() as u64,
+        );
 
-    if verify_after_seal {
-        ensure!(verified_after_seal, "the bridge produced a seal that did not verify");
-    }
+        let commit_phase2_started = Instant::now();
+        let commit = seal_commit_phase2(&config, commit_phase1, prover_id, sector_id)
+            .context("seal_commit_phase2 failed")?;
+        inner_timings_ms.insert(
+            "seal_commit_phase2".to_string(),
+            commit_phase2_started.elapsed().as_millis() as u64,
+        );
 
-    let extra_blobs_hex = collect_extra_blobs(sealed_sector_file.path(), cache_dir.path())?;
+        let verified_after_seal = if verify_after_seal {
+            let verify_started = Instant::now();
+            verify_seal::<SectorShape2KiB>(
+                &config,
+                pre_commit.comm_r,
+                pre_commit.comm_d,
+                prover_id,
+                sector_id,
+                ticket,
+                seed,
+                &commit.proof,
+            )
+            .context("verify_seal failed")
+            .inspect(|_| {
+                inner_timings_ms.insert(
+                    "verify_seal".to_string(),
+                    verify_started.elapsed().as_millis() as u64,
+                );
+            })?
+        } else {
+            false
+        };
 
-    Ok(SealArtifact {
-        status: BRIDGE_STATUS.to_string(),
-        verified_after_seal,
-        sector_size: SECTOR_SIZE_2_KIB,
-        api_version: "V1_2_0".to_string(),
-        registered_seal_proof: REGISTERED_SEAL_PROOF_2KIB_V1_2,
-        porep_id_hex: hex::encode(porep_id),
-        prover_id_hex: hex::encode(prover_id),
-        sector_id: sector_id_value,
-        ticket_hex: hex::encode(ticket),
-        seed_hex: hex::encode(seed),
-        piece_size: piece_info.size.0,
-        piece_commitment_hex: hex::encode(piece_info.commitment),
-        comm_d_hex: hex::encode(pre_commit.comm_d),
-        comm_r_hex: hex::encode(pre_commit.comm_r),
-        proof_hex: hex::encode(commit.proof),
-        inner_timings_ms,
-        extra_blobs_hex,
-    })
+        if verify_after_seal {
+            ensure!(verified_after_seal, "the bridge produced a seal that did not verify");
+        }
+
+        let extra_blobs_hex = collect_extra_blobs(sealed_sector_file.path(), cache_dir.path())?;
+
+        Ok(SealArtifact {
+            status: BRIDGE_STATUS.to_string(),
+            verified_after_seal,
+            sector_size: SECTOR_SIZE_2_KIB,
+            api_version: "V1_2_0".to_string(),
+            registered_seal_proof: REGISTERED_SEAL_PROOF_2KIB_V1_2,
+            porep_id_hex: hex::encode(porep_id),
+            prover_id_hex: hex::encode(prover_id),
+            sector_id: sector_id_value,
+            ticket_hex: hex::encode(ticket),
+            seed_hex: hex::encode(seed),
+            piece_size: piece_info.size.0,
+            piece_commitment_hex: hex::encode(piece_info.commitment),
+            comm_d_hex: hex::encode(pre_commit.comm_d),
+            comm_r_hex: hex::encode(pre_commit.comm_r),
+            proof_hex: hex::encode(commit.proof),
+            inner_timings_ms,
+            cpu_fallback_detected: false,
+            cpu_fallback_events: Vec::new(),
+            extra_blobs_hex,
+        })
+    })?;
+
+    artifact.cpu_fallback_events = extract_cpu_fallback_events(&warnings);
+    artifact.cpu_fallback_detected = !artifact.cpu_fallback_events.is_empty();
+    Ok(artifact)
 }
 
 fn verify(artifact: &SealArtifact) -> Result<VerifyResult> {

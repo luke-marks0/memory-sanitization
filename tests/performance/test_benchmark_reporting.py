@@ -14,6 +14,8 @@ def test_benchmark_summary_reports_hbm_timing_and_coverage_metrics() -> None:
     result.coverage_fraction = 0.91
     result.real_porep_ratio = 1.0
     result.response_ms = 17
+    result.cpu_fallback_detected = True
+    result.cpu_fallback_events = ["[WARN:bellperson::gpu] GPU FFT failed! Falling back to CPU."]
     result.timings_ms["copy_to_hbm"] = 12
     result.timings_ms["challenge_response"] = 17
     result.timings_ms["outer_tree_build"] = 9
@@ -28,3 +30,8 @@ def test_benchmark_summary_reports_hbm_timing_and_coverage_metrics() -> None:
     assert summary["timings_ms"]["challenge_response"]["mean"] == 17.0
     assert summary["per_device_hbm_coverage_bytes"]["0"]["mean"] == 123456.0
     assert summary["verifier_cpu_time_ms"]["mean"] == 11.0
+    assert summary["cpu_fallback"]["detected_run_count"] == 1
+    assert summary["cpu_fallback"]["detected_run_rate"] == 1.0
+    assert summary["cpu_fallback"]["unique_events"] == [
+        "[WARN:bellperson::gpu] GPU FFT failed! Falling back to CPU."
+    ]
