@@ -109,6 +109,39 @@ def test_replica_and_full_cache_profiles_sort_blobs_canonically() -> None:
     )
 
 
+def test_bridge_exported_extra_blobs_support_replica_and_full_cache_profiles() -> None:
+    artifact = _sample_artifact()
+    artifact.extra_blobs_hex = {
+        "sealed_replica": b"replica-bytes".hex(),
+        "cache_file": b"cache-file-bytes".hex(),
+    }
+
+    replica_unit = build_porep_unit_from_seal_artifact(
+        artifact,
+        storage_profile="replica",
+        upstream_snapshot_id="rust-fil-proofs:test",
+    )
+    full_cache_unit = build_porep_unit_from_seal_artifact(
+        artifact,
+        storage_profile="full-cache",
+        upstream_snapshot_id="rust-fil-proofs:test",
+    )
+
+    assert replica_unit.blob_kinds == (
+        "seal_proof",
+        "sealed_replica",
+        "public_inputs",
+        "proof_metadata",
+    )
+    assert full_cache_unit.blob_kinds == (
+        "seal_proof",
+        "sealed_replica",
+        "cache_file",
+        "public_inputs",
+        "proof_metadata",
+    )
+
+
 def test_porep_unit_parse_rejects_payload_tampering() -> None:
     artifact = _sample_artifact()
     unit = build_porep_unit_from_seal_artifact(

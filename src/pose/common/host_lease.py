@@ -158,9 +158,35 @@ def create_host_lease(
 @dataclass
 class HostLeaseAttachment:
     fd: int
+    usable_bytes: int
     mapping: mmap.mmap
     _backing_file: BinaryIO | None = None
     _shared_memory: shared_memory.SharedMemory | None = None
+
+    def write(self, payload: bytes) -> None:
+        if len(payload) > self.usable_bytes:
+            raise ResourceFailure(
+                f"Payload length {len(payload)} exceeds host attachment size {self.usable_bytes}"
+            )
+        self.mapping.seek(0)
+        self.mapping.write(payload)
+        remaining = self.usable_bytes - len(payload)
+        if remaining:
+            self.mapping[len(payload) : self.usable_bytes] = bytes(remaining)
+        self.mapping.flush()
+
+    def read(self, length: int, offset: int = 0) -> bytes:
+        if offset < 0 or length < 0 or offset + length > self.usable_bytes:
+            raise ResourceFailure(
+                f"Invalid host attachment read offset={offset} length={length} "
+                f"for size {self.usable_bytes}"
+            )
+        self.mapping.seek(offset)
+        return self.mapping.read(length)
+
+    def read_leaf(self, leaf_index: int, leaf_size: int) -> bytes:
+        start = leaf_index * leaf_size
+        return self.read(leaf_size, offset=start)
 
     def close(self) -> None:
         try:
@@ -185,6 +211,7 @@ def attach_host_lease(
         access = mmap.ACCESS_READ if read_only else mmap.ACCESS_WRITE
         return HostLeaseAttachment(
             fd=shared._fd,
+            usable_bytes=usable_bytes,
             mapping=mmap.mmap(shared._fd, usable_bytes, access=access),
             _shared_memory=shared,
         )
@@ -194,6 +221,7 @@ def attach_host_lease(
     access = mmap.ACCESS_READ if read_only else mmap.ACCESS_WRITE
     return HostLeaseAttachment(
         fd=backing_file.fileno(),
+        usable_bytes=usable_bytes,
         mapping=mmap.mmap(backing_file.fileno(), usable_bytes, access=access),
         _backing_file=backing_file,
     )

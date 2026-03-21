@@ -8,7 +8,8 @@
 - Real Python-callable vendored Filecoin bridge: complete
 - Canonical PoRep unit serialization: complete on the Python-owned path
 - Host-memory PoSE: complete
-- HBM and hybrid modes: not started
+- Single-gpu HBM mode: implemented; archived real-H100 evidence pending lab run
+- Hybrid mode: not started
 - Scale-out and parity-gated promotion: not started
 
 ## Milestone 1: Phase 0 Completion
@@ -110,6 +111,23 @@ Tasks:
 Acceptance:
 - one real single-H100 HBM session passes with the same success semantics as
   host mode.
+
+Status:
+- implemented on the current single-gpu HBM path;
+- verifier-owned CUDA IPC leases, prover-side HBM materialization, outer HBM
+  openings, per-device HBM accounting, and zeroized cleanup are implemented;
+- the Rust bridge now exports the extra PoRep blobs required for `replica` and
+  `full-cache` storage profiles;
+- `pose verifier run --profile single-h100-hbm-max` and gpu-only
+  `pose verifier run --plan ...` execute real single-H100 HBM sessions against
+  the production gRPC path;
+- `pose bench run --profile single-h100-hbm-max` now archives benchmark bundles
+  with result JSON, summary metrics, logs, environment metadata, upstream
+  identity, toolchain versions, and GPU inventory;
+- adversarial coverage now includes rejection of HBM sessions whose leased
+  device allocation is not actually filled with the declared payload;
+- final Phase 2 exit still requires a real archived single-H100 HBM benchmark
+  bundle produced on target hardware.
 
 ## Milestone 5: Hybrid Host + HBM
 

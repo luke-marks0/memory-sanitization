@@ -1,0 +1,14 @@
+{
+  "cuda_driver_version": "13.0",
+  "cuda_runtime_available": true,
+  "cuda_runtime_version": "13.0",
+  "device_count": 1,
+  "devices": [
+    {
+      "available_bytes": 83916161024,
+      "device": 0,
+      "total_bytes": 85017624576
+    }
+  ],
+  "nvidia_smi": "0, NVIDIA H100 80GB HBM3, 81559 MiB, 580.95.05"
+}

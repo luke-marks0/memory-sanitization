@@ -1,0 +1,14 @@
+{
+  "benchmark_class": "cold",
+  "environment_path": "/workspace/memory-sanitization/.pose/benchmarks/dev-small/20260321T041210Z/environment.json",
+  "gpu_inventory_path": "/workspace/memory-sanitization/.pose/benchmarks/dev-small/20260321T041210Z/gpu_inventory.json",
+  "log_path": "/workspace/memory-sanitization/.pose/benchmarks/dev-small/20260321T041210Z/benchmark.log",
+  "profile_name": "dev-small",
+  "result_paths": [
+    "/workspace/memory-sanitization/.pose/benchmarks/dev-small/20260321T041210Z/run-001.result.json"
+  ],
+  "run_directory": "/workspace/memory-sanitization/.pose/benchmarks/dev-small/20260321T041210Z",
+  "summary_path": "/workspace/memory-sanitization/.pose/benchmarks/dev-small/20260321T041210Z/summary.json",
+  "toolchains_path": "/workspace/memory-sanitization/.pose/benchmarks/dev-small/20260321T041210Z/toolchains.json",
+  "upstream_path": "/workspace/memory-sanitization/.pose/benchmarks/dev-small/20260321T041210Z/upstream.json"
+}

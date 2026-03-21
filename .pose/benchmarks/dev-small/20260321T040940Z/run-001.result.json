@@ -1,0 +1,84 @@
+{
+  "artifact_path": "/workspace/memory-sanitization/.pose/benchmarks/dev-small/20260321T040940Z/run-001.result.json",
+  "challenge_count": 1,
+  "challenge_indices_by_region": {
+    "host-0": [
+      0
+    ]
+  },
+  "challenge_leaf_size": 4096,
+  "challenge_policy": {
+    "epsilon": 0.01,
+    "lambda_bits": 32,
+    "max_challenges": 64
+  },
+  "cleanup_policy": {
+    "verify_zeroization": false,
+    "zeroize": true
+  },
+  "cleanup_status": "ZEROIZED_AND_RELEASED",
+  "coverage_fraction": 1.0,
+  "deadline_ms": 5000,
+  "environment": {
+    "cargo": "/root/.cargo/bin/cargo",
+    "platform": "Linux-6.8.0-1045-gcp-x86_64-with-glibc2.39",
+    "python_executable": "/workspace/memory-sanitization/.venv/bin/python3",
+    "python_version": "3.12.13",
+    "rust_toolchain": "[toolchain]\nchannel = \"1.93.1\"\ncomponents = [\"clippy\", \"rustfmt\"]\nprofile = \"minimal\"\n",
+    "uv": "/usr/local/bin/uv"
+  },
+  "gpu_covered_bytes_by_device": {},
+  "gpu_devices": [],
+  "gpu_usable_bytes_by_device": {},
+  "host_covered_bytes": 4096,
+  "host_total_bytes": 671501778944,
+  "host_usable_bytes": 4096,
+  "inner_filecoin_verified": true,
+  "lease_expiry": "",
+  "notes": [
+    "Host-only session over 1 canonical PoRep unit(s)."
+  ],
+  "outer_pose_verified": true,
+  "profile_name": "dev-small",
+  "real_porep_bytes": 4096,
+  "real_porep_ratio": 1.0,
+  "region_manifest_roots": {
+    "host-0": "3b53b6f4343883cab267fa5bc8373ca108a5fa09c5af8fc2190d17df5b75079a"
+  },
+  "region_payload_bytes_by_region": {
+    "host-0": 4096
+  },
+  "region_roots": {
+    "host-0": "9a9fd917f6fe2395f69004830b92547bb30914a06eb0e1141b4f426d8c052770"
+  },
+  "resident_process_id": 0,
+  "resident_socket_path": "",
+  "response_ms": 0,
+  "run_class": "cold",
+  "session_id": "2026-03-21T04:09:40Z-3d02bbc2",
+  "session_manifest_root": "96e397e29d6a1db6c179052e004ee31004a3f2ef8ca32b36de25febe88498548",
+  "session_nonce": "666f750c62401def964c4418822c64e6",
+  "session_plan_root": "e915d67af4b36c5613ff500631c9f0d3730c68d7f0355177f8a48104973a83ed",
+  "success": true,
+  "tail_filler_bytes": 0,
+  "timings_ms": {
+    "allocation": 0,
+    "challenge_response": 0,
+    "cleanup": 1,
+    "copy_to_hbm": 0,
+    "copy_to_host": 1,
+    "data_generation": 49806,
+    "discover": 209,
+    "inner_verify": 11,
+    "object_serialization": 0,
+    "outer_tree_build": 0,
+    "outer_verify": 0,
+    "region_leasing": 0,
+    "seal_commit_phase1": 16,
+    "seal_commit_phase2": 49617,
+    "seal_pre_commit_phase1": 7,
+    "seal_pre_commit_phase2": 142,
+    "total": 50163
+  },
+  "verdict": "SUCCESS"
+}

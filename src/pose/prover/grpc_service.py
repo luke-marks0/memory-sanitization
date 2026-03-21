@@ -10,6 +10,7 @@ from time import perf_counter
 import grpc
 
 from pose.common.errors import ProtocolError, ResourceFailure
+from pose.common.gpu_lease import GpuLeaseAttachment, attach_gpu_lease
 from pose.common.host_lease import HostLeaseAttachment, attach_host_lease
 from pose.common.merkle import commit_payload
 from pose.filecoin.porep_unit import build_porep_unit_from_seal_artifact
@@ -28,12 +29,13 @@ from pose.v1 import session_pb2, session_pb2_grpc
 
 
 @dataclass
-class HostSessionState:
+class SessionState:
     plan: SessionPlan
     leases: dict[str, LeaseRecord] = field(default_factory=dict)
-    attachments: dict[str, HostLeaseAttachment] = field(default_factory=dict)
+    attachments: dict[str, HostLeaseAttachment | GpuLeaseAttachment] = field(default_factory=dict)
     artifacts_by_region: dict[str, list[SealArtifact]] = field(default_factory=dict)
     region_manifests: dict[str, RegionManifest] = field(default_factory=dict)
+    commitments: dict[str, object] = field(default_factory=dict)
     finalized: bool = False
     retained: bool = False
     cleanup_status: str = "NOT_RUN"
@@ -42,39 +44,41 @@ class HostSessionState:
 class PoseSessionServicer(session_pb2_grpc.PoseSessionServiceServicer):
     def __init__(self) -> None:
         self._reference = VendoredFilecoinReference()
-        self._sessions: dict[str, HostSessionState] = {}
+        self._sessions: dict[str, SessionState] = {}
 
     def _require_protocol_version(self, protocol_version: str) -> None:
         if protocol_version != GRPC_PROTOCOL_VERSION:
             raise ProtocolError(f"Unsupported gRPC protocol version: {protocol_version!r}")
 
-    def _session(self, session_id: str) -> HostSessionState:
+    def _session(self, session_id: str) -> SessionState:
         try:
             return self._sessions[session_id]
         except KeyError as error:
             raise ProtocolError(f"Unknown session id: {session_id}") from error
 
-    def _require_host_only_minimal(self, plan: SessionPlan) -> None:
-        if plan.porep_unit_profile != "minimal":
-            raise ResourceFailure("Phase 1 gRPC prover only supports the minimal PoRep unit profile.")
+    def _require_single_region_plan(self, plan: SessionPlan) -> None:
         if plan.unit_count <= 0:
             raise ProtocolError(f"Session plan unit_count must be positive, got {plan.unit_count}")
         if len(plan.regions) != 1:
-            raise ProtocolError("Phase 1 gRPC prover requires exactly one planned region.")
+            raise ProtocolError("Current gRPC prover requires exactly one planned region.")
         region = plan.regions[0]
-        if region.region_type != "host" or region.gpu_device is not None:
-            raise ProtocolError("Phase 1 gRPC prover only supports one host region.")
+        if region.region_type not in {"host", "gpu"}:
+            raise ProtocolError(f"Unsupported region type: {region.region_type!r}")
+        if region.region_type == "host" and region.gpu_device is not None:
+            raise ProtocolError("Host regions must not set gpu_device.")
+        if region.region_type == "gpu" and region.gpu_device is None:
+            raise ProtocolError("GPU regions must include gpu_device.")
         if plan.challenge_leaf_size <= 0:
             raise ProtocolError(
                 f"Session plan challenge leaf size must be positive, got {plan.challenge_leaf_size}"
             )
         if region.usable_bytes <= 0 or region.usable_bytes % plan.challenge_leaf_size != 0:
             raise ProtocolError(
-                "Host region usable_bytes must be a positive multiple of the challenge leaf size."
+                "Region usable_bytes must be a positive multiple of the challenge leaf size."
             )
         if len(plan.sector_plan) != plan.unit_count:
             raise ProtocolError(
-                "Phase 1 gRPC prover requires one explicit sector-plan entry per planned PoRep unit."
+                "Current gRPC prover requires one explicit sector-plan entry per planned PoRep unit."
             )
 
         seen_indices: set[int] = set()
@@ -99,7 +103,7 @@ class PoseSessionServicer(session_pb2_grpc.PoseSessionServiceServicer):
                 f"Sector-plan indices must match 0..{plan.unit_count - 1}, got {sorted(seen_indices)}"
             )
 
-    def _require_not_expired(self, state: HostSessionState) -> None:
+    def _require_not_expired(self, state: SessionState) -> None:
         if not state.leases:
             return
         expiry = datetime.fromisoformat(next(iter(state.leases.values())).lease_expiry)
@@ -107,19 +111,36 @@ class PoseSessionServicer(session_pb2_grpc.PoseSessionServiceServicer):
             self._cleanup_state(state)
             raise ProtocolError("Session lease expired before the requested operation.")
 
-    def _cleanup_state(self, state: HostSessionState) -> str:
+    def _cleanup_state(self, state: SessionState) -> str:
         cleanup_status = "NOT_RUN"
         for attachment in state.attachments.values():
-            cleanup_status = _cleanup_mapping(
-                mapping=attachment.mapping,
-                usable_bytes=state.plan.regions[0].usable_bytes,
-                zeroize=state.plan.cleanup_policy.zeroize,
-                verify_zeroization=state.plan.cleanup_policy.verify_zeroization,
-            )
+            if isinstance(attachment, HostLeaseAttachment):
+                cleanup_status = _cleanup_mapping(
+                    mapping=attachment.mapping,
+                    usable_bytes=attachment.usable_bytes,
+                    zeroize=state.plan.cleanup_policy.zeroize,
+                    verify_zeroization=state.plan.cleanup_policy.verify_zeroization,
+                )
+            else:
+                if state.plan.cleanup_policy.zeroize:
+                    attachment.zeroize()
+                    if (
+                        state.plan.cleanup_policy.verify_zeroization
+                        and not attachment.verify_zeroized()
+                    ):
+                        raise ResourceFailure("GPU lease zeroization verification failed")
+                    cleanup_status = (
+                        "ZEROIZED_AND_VERIFIED"
+                        if state.plan.cleanup_policy.verify_zeroization
+                        else "ZEROIZED_AND_RELEASED"
+                    )
+                else:
+                    cleanup_status = "RELEASED_WITHOUT_ZEROIZE"
             attachment.close()
         state.attachments.clear()
         state.artifacts_by_region.clear()
         state.region_manifests.clear()
+        state.commitments.clear()
         state.cleanup_status = cleanup_status
         return cleanup_status
 
@@ -131,7 +152,7 @@ class PoseSessionServicer(session_pb2_grpc.PoseSessionServiceServicer):
     def _serialize_artifacts(
         self,
         *,
-        state: HostSessionState,
+        state: SessionState,
         region_id: str,
     ) -> tuple[list[object], bytes, int]:
         artifacts = state.artifacts_by_region.get(region_id)
@@ -146,11 +167,6 @@ class PoseSessionServicer(session_pb2_grpc.PoseSessionServiceServicer):
                 storage_profile=state.plan.porep_unit_profile,
                 leaf_alignment_bytes=state.plan.challenge_leaf_size,
             )
-            if len(unit.serialized_bytes) != state.plan.challenge_leaf_size:
-                raise ResourceFailure(
-                    "Phase 1 host materialization expects each minimal PoRep unit to occupy "
-                    f"exactly one leaf, got {len(unit.serialized_bytes)} bytes."
-                )
             units.append(unit)
             payload_parts.append(unit.serialized_bytes)
         return units, b"".join(payload_parts), int(
@@ -170,6 +186,8 @@ class PoseSessionServicer(session_pb2_grpc.PoseSessionServiceServicer):
             protocol_version=GRPC_PROTOCOL_VERSION,
             capabilities=[
                 "host-memory",
+                "gpu-hbm",
+                "cuda-ipc",
                 "real-filecoin-reference",
                 "rechallenge",
                 "unix-domain-sockets",
@@ -184,10 +202,10 @@ class PoseSessionServicer(session_pb2_grpc.PoseSessionServiceServicer):
         try:
             self._require_protocol_version(request.protocol_version)
             plan = session_plan_from_proto(request.plan)
-            self._require_host_only_minimal(plan)
+            self._require_single_region_plan(plan)
             if plan.session_id in self._sessions:
                 raise ProtocolError(f"Duplicate session id: {plan.session_id}")
-            self._sessions[plan.session_id] = HostSessionState(plan=plan)
+            self._sessions[plan.session_id] = SessionState(plan=plan)
         except Exception as error:  # pragma: no cover - grpc abort
             self._abort(context, error)
         return session_pb2.PlanSessionResponse(session_id=request.plan.session_id, accepted=True)
@@ -272,18 +290,23 @@ class PoseSessionServicer(session_pb2_grpc.PoseSessionServiceServicer):
                 session_plan_root=state.plan.plan_root_hex,
                 tail_filler_bytes=tail_filler_bytes,
             )
-            attachment = attach_host_lease(lease.lease_handle, usable_bytes=lease.usable_bytes)
+            copy_to_host_ms = 0
+            copy_to_hbm_ms = 0
             copy_started = perf_counter()
-            attachment.mapping.seek(0)
-            attachment.mapping.write(payload)
-            attachment.mapping.flush()
-            copy_to_host_ms = int((perf_counter() - copy_started) * 1000)
+            if region.region_type == "host":
+                attachment = attach_host_lease(lease.lease_handle, usable_bytes=lease.usable_bytes)
+                attachment.write(payload)
+                copy_to_host_ms = int((perf_counter() - copy_started) * 1000)
+            else:
+                attachment = attach_gpu_lease(lease.lease_handle, usable_bytes=lease.usable_bytes)
+                attachment.write(payload)
+                copy_to_hbm_ms = int((perf_counter() - copy_started) * 1000)
             outer_tree_started = perf_counter()
             commitment = commit_payload(payload, state.plan.challenge_leaf_size)
             outer_tree_build_ms = int((perf_counter() - outer_tree_started) * 1000)
             manifest = build_region_manifest(
                 region_id=region.region_id,
-                region_type="host",
+                region_type=region.region_type,
                 usable_bytes=lease.usable_bytes,
                 leaf_size=state.plan.challenge_leaf_size,
                 payload=payload,
@@ -295,6 +318,7 @@ class PoseSessionServicer(session_pb2_grpc.PoseSessionServiceServicer):
                 state.attachments[region.region_id].close()
             state.attachments[region.region_id] = attachment
             state.region_manifests[region.region_id] = manifest
+            state.commitments[region.region_id] = commitment
         except Exception as error:  # pragma: no cover - grpc abort
             self._abort(context, error)
         return session_pb2.MaterializeRegionPayloadsResponse(
@@ -310,6 +334,7 @@ class PoseSessionServicer(session_pb2_grpc.PoseSessionServiceServicer):
             ],
             timings_ms={
                 "copy_to_host": copy_to_host_ms,
+                "copy_to_hbm": copy_to_hbm_ms,
                 "object_serialization": object_serialization_ms,
                 "outer_tree_build": outer_tree_build_ms,
             },
@@ -352,19 +377,16 @@ class PoseSessionServicer(session_pb2_grpc.PoseSessionServiceServicer):
             self._require_not_expired(state)
             challenge = request.challenges[0]
             attachment = state.attachments.get(challenge.region_id)
+            commitment = state.commitments.get(challenge.region_id)
             manifest = state.region_manifests.get(challenge.region_id)
-            if attachment is None or manifest is None:
+            if attachment is None or manifest is None or commitment is None:
                 raise ProtocolError(
                     "MaterializeRegionPayloads must run before ChallengeOuter."
                 )
-            attachment.mapping.seek(0)
-            payload = attachment.mapping.read(manifest.usable_bytes)
-            commitment = commit_payload(payload, manifest.leaf_size)
             response_started = perf_counter()
             openings = []
             for index in challenge.leaf_indices:
-                start = int(index) * manifest.leaf_size
-                leaf = payload[start : start + manifest.leaf_size]
+                leaf = attachment.read_leaf(int(index), manifest.leaf_size)
                 opening = commitment.opening(int(index), leaf)
                 openings.append(
                     session_pb2.OuterOpening(

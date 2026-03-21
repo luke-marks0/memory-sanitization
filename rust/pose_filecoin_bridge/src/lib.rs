@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
+use std::fs;
 use std::io::{Seek, Write};
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{ensure, Context, Result};
@@ -73,6 +75,8 @@ struct SealArtifact {
     comm_r_hex: String,
     proof_hex: String,
     inner_timings_ms: BTreeMap<String, u64>,
+    #[serde(default)]
+    extra_blobs_hex: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -168,6 +172,111 @@ fn create_staged_sector(
     add_piece(piece_file, &mut staged_sector_file, piece_size, &[])
         .context("failed to add piece to staged sector")?;
     Ok(staged_sector_file)
+}
+
+fn archive_entries(entries: &[(String, Vec<u8>)]) -> Vec<u8> {
+    let mut encoded = Vec::new();
+    for (path, payload) in entries {
+        let path_bytes = path.as_bytes();
+        encoded.extend_from_slice(&(path_bytes.len() as u32).to_be_bytes());
+        encoded.extend_from_slice(path_bytes);
+        encoded.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+        encoded.extend_from_slice(payload);
+    }
+    encoded
+}
+
+fn blob_kind_for_cache_path(relative_path: &Path) -> &'static str {
+    let file_name = relative_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    if file_name == "p_aux" {
+        "persistent_aux"
+    } else if file_name == "t_aux" {
+        "temporary_aux"
+    } else if file_name.starts_with("tree-c") {
+        "tree_c"
+    } else if file_name.starts_with("tree-r-last") {
+        "tree_r_last"
+    } else if file_name.starts_with("layer-") {
+        "labels"
+    } else {
+        "cache_file"
+    }
+}
+
+fn collect_cache_files(root: &Path, path: &Path, output: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in fs::read_dir(path)
+        .with_context(|| format!("failed to read cache directory {}", path.display()))?
+    {
+        let entry = entry.with_context(|| format!("failed to read entry under {}", path.display()))?;
+        let entry_path = entry.path();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to inspect {}", entry_path.display()))?;
+        if file_type.is_dir() {
+            collect_cache_files(root, &entry_path, output)?;
+        } else if file_type.is_file() {
+            output.push(
+                entry_path
+                    .strip_prefix(root)
+                    .with_context(|| {
+                        format!(
+                            "cache file {} was not nested under {}",
+                            entry_path.display(),
+                            root.display()
+                        )
+                    })?
+                    .to_path_buf(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn collect_extra_blobs(
+    sealed_sector_path: &Path,
+    cache_dir: &Path,
+) -> Result<BTreeMap<String, String>> {
+    let mut grouped: BTreeMap<String, Vec<(String, Vec<u8>)>> = BTreeMap::new();
+    grouped.insert(
+        "sealed_replica".to_string(),
+        vec![(
+            "sealed-sector".to_string(),
+            fs::read(sealed_sector_path).with_context(|| {
+                format!(
+                    "failed to read sealed replica bytes from {}",
+                    sealed_sector_path.display()
+                )
+            })?,
+        )],
+    );
+
+    let mut relative_paths = Vec::new();
+    collect_cache_files(cache_dir, cache_dir, &mut relative_paths)?;
+    relative_paths.sort();
+
+    for relative_path in relative_paths {
+        let absolute_path = cache_dir.join(&relative_path);
+        let payload = fs::read(&absolute_path)
+            .with_context(|| format!("failed to read cache artifact {}", absolute_path.display()))?;
+        grouped
+            .entry(blob_kind_for_cache_path(&relative_path).to_string())
+            .or_default()
+            .push((relative_path.to_string_lossy().replace('\\', "/"), payload));
+    }
+
+    let mut encoded = BTreeMap::new();
+    for (kind, entries) in grouped {
+        let payload = if kind == "sealed_replica" {
+            entries.into_iter().next().map(|(_, payload)| payload).unwrap_or_default()
+        } else {
+            archive_entries(&entries)
+        };
+        encoded.insert(kind, hex::encode(payload));
+    }
+    Ok(encoded)
 }
 
 fn seal(request: SealRequest) -> Result<SealArtifact> {
@@ -284,6 +393,8 @@ fn seal(request: SealRequest) -> Result<SealArtifact> {
         ensure!(verified_after_seal, "the bridge produced a seal that did not verify");
     }
 
+    let extra_blobs_hex = collect_extra_blobs(sealed_sector_file.path(), cache_dir.path())?;
+
     Ok(SealArtifact {
         status: BRIDGE_STATUS.to_string(),
         verified_after_seal,
@@ -301,6 +412,7 @@ fn seal(request: SealRequest) -> Result<SealArtifact> {
         comm_r_hex: hex::encode(pre_commit.comm_r),
         proof_hex: hex::encode(commit.proof),
         inner_timings_ms,
+        extra_blobs_hex,
     })
 }
 

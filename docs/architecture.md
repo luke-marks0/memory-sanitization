@@ -63,7 +63,8 @@ The spec-defined order remains the execution order:
 
 ## Current Status
 
-This document reflects the completed Phase 1 host-only state:
+This document reflects the completed Phase 1 host-only plus Phase 2
+single-H100 HBM state:
 
 - repository layout now matches the normative shape;
 - documentation set exists and is aligned to the spec;
@@ -83,14 +84,27 @@ This document reflects the completed Phase 1 host-only state:
   `proto/pose/v1/session.proto`; the verifier keeps policy, challenge
   selection, manifest validation, and verdict logic while the prover service
   owns inner-proof generation, materialization, and challenge openings;
+- the same gRPC boundary now supports verifier-owned CUDA IPC HBM leases for a
+  single gpu region, including prover-side materialization into HBM,
+  verifier-side payload validation, outer HBM openings, and zeroized cleanup;
+- the benchmark harness now archives host-only and single-gpu HBM benchmark
+  bundles with result JSON, summary metrics, logs, environment metadata,
+  upstream/toolchain information, and GPU inventory;
 - the host session result artifact now records both `session_plan_root` and
   `session_manifest_root`, and retained sessions record the resident prover
   endpoint needed for rechallenge;
 - adversarial host-memory tests cover replayed openings, wrong outer bytes,
   partial overwrite, sparse writes, timeout, payload-length mismatch,
   insufficient real-PoRep ratio, and cleanup failure reporting;
+- adversarial HBM coverage now includes rejection of sessions where the leased
+  device allocation is not actually filled with the declared payload;
 - `pose verifier run --plan ...` and `pose verifier rechallenge --session-id ...`
   are implemented on the real host-only path;
-- Phase 0 is complete, and Phase 1 is complete on the current host-only
-  `minimal` profile path;
-- later HBM, hybrid, scale-out, and parity-gated promotion work remains ahead.
+- `pose verifier run --profile single-h100-hbm-max` and gpu-only
+  `pose verifier run --plan ...` are implemented on the real single-gpu HBM
+  path;
+- Phase 0 is complete, Phase 1 is complete on the current host-only `minimal`
+  profile path, and the Phase 2 single-gpu HBM code path plus benchmark
+  archive machinery are implemented pending a real archived single-H100 lab
+  run;
+- later hybrid, scale-out, and parity-gated promotion work remains ahead.

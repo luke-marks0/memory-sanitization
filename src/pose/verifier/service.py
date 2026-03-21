@@ -7,6 +7,7 @@ from pose.common.errors import ProtocolError
 from pose.protocol.codec import load_json_file
 from pose.protocol.messages import SessionPlan
 from pose.protocol.result_schema import SessionResult, bootstrap_result
+from pose.verifier.grpc_gpu_session import run_gpu_session_via_grpc
 from pose.verifier.host_session import run_host_session
 from pose.verifier.rechallenge import run_host_rechallenge
 from pose.verifier.session_store import (
@@ -20,9 +21,9 @@ from pose.verifier.session_store import (
 class VerifierService:
     def describe(self) -> dict[str, object]:
         return {
-            "status": "phase1-host-complete",
+            "status": "phase2-single-gpu-hbm-complete",
             "supports_host_memory": True,
-            "supports_gpu_hbm": False,
+            "supports_gpu_hbm": True,
             "supports_rechallenge": True,
         }
 
@@ -39,9 +40,16 @@ class VerifierService:
                 retain_session=retain_session,
                 session_plan=session_plan,
             )
+        gpus = profile.target_devices.get("gpus")
+        if not profile.target_devices.get("host", False) and isinstance(gpus, list) and len(gpus) == 1:
+            return run_gpu_session_via_grpc(
+                profile,
+                retain_session=retain_session,
+                session_plan=session_plan,
+            )
         result = bootstrap_result(
             profile_name=profile.name,
-            note="Only host-only sessions are implemented at this stage.",
+            note="Only host-only and single-gpu HBM sessions are implemented at this stage.",
         )
         result.verdict = "PROTOCOL_ERROR"
         return result
@@ -58,28 +66,43 @@ class VerifierService:
             return result
 
         region = session_plan.regions[0]
-        if region.region_type != "host" or region.gpu_device is not None:
+        if region.region_type == "host" and region.gpu_device is None:
+            profile = BenchmarkProfile(
+                name=session_plan.profile_name,
+                benchmark_class="cold",
+                target_devices={"host": True, "gpus": []},
+                reserve_policy={"host_bytes": region.usable_bytes, "per_gpu_bytes": 0},
+                host_target_fraction=1.0,
+                per_gpu_target_fraction=0.0,
+                porep_unit_profile=session_plan.porep_unit_profile,
+                leaf_size=session_plan.challenge_leaf_size,
+                challenge_policy=session_plan.challenge_policy.to_cbor_object(),
+                deadline_policy=session_plan.deadline_policy.to_cbor_object(),
+                cleanup_policy=session_plan.cleanup_policy.to_cbor_object(),
+                repetition_count=1,
+            )
+        elif region.region_type == "gpu" and region.gpu_device is not None:
+            profile = BenchmarkProfile(
+                name=session_plan.profile_name,
+                benchmark_class="cold",
+                target_devices={"host": False, "gpus": [region.gpu_device]},
+                reserve_policy={"host_bytes": 0, "per_gpu_bytes": region.usable_bytes},
+                host_target_fraction=0.0,
+                per_gpu_target_fraction=1.0,
+                porep_unit_profile=session_plan.porep_unit_profile,
+                leaf_size=session_plan.challenge_leaf_size,
+                challenge_policy=session_plan.challenge_policy.to_cbor_object(),
+                deadline_policy=session_plan.deadline_policy.to_cbor_object(),
+                cleanup_policy=session_plan.cleanup_policy.to_cbor_object(),
+                repetition_count=1,
+            )
+        else:
             result = bootstrap_result(profile_name=session_plan.profile_name)
             result.session_id = session_plan.session_id
             result.session_nonce = session_plan.nonce
             result.verdict = "PROTOCOL_ERROR"
-            result.notes.append("Current Phase 1 host runner only supports host regions in plan files.")
+            result.notes.append("Current runner only supports one host or one gpu region in plan files.")
             return result
-
-        profile = BenchmarkProfile(
-            name=session_plan.profile_name,
-            benchmark_class="cold",
-            target_devices={"host": True, "gpus": []},
-            reserve_policy={"host_bytes": region.usable_bytes, "per_gpu_bytes": 0},
-            host_target_fraction=1.0,
-            per_gpu_target_fraction=0.0,
-            porep_unit_profile=session_plan.porep_unit_profile,
-            leaf_size=session_plan.challenge_leaf_size,
-            challenge_policy=session_plan.challenge_policy.to_cbor_object(),
-            deadline_policy=session_plan.deadline_policy.to_cbor_object(),
-            cleanup_policy=session_plan.cleanup_policy.to_cbor_object(),
-            repetition_count=1,
-        )
         return self.run_session(
             profile,
             retain_session=plan_file.retain_session,

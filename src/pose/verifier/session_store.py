@@ -32,6 +32,12 @@ def sessions_root() -> Path:
     return root
 
 
+def benchmarks_root() -> Path:
+    root = state_root() / "benchmarks"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def result_artifact_path(session_id: str, *, run_class: str) -> Path:
     if run_class == "cold":
         return results_root() / f"{session_id}.json"

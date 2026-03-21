@@ -23,9 +23,9 @@ class ProverService:
                 "note": str(error),
             }
         return {
-            "status": "phase1-host-complete",
+            "status": "phase2-single-gpu-hbm-complete",
             "supports_host_memory": True,
-            "supports_gpu_hbm": False,
+            "supports_gpu_hbm": True,
             "supports_real_filecoin_reference": bool(
                 bridge_status.get("supports_real_filecoin_reference", False)
             ),

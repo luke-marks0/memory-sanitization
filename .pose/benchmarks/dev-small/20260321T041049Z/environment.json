@@ -1,0 +1,10 @@
+{
+  "cargo": "/root/.cargo/bin/cargo",
+  "head_commit": "8f509357a03ffc4c5d8bddd81bdfd6832b79c1a8",
+  "head_status": "M README.md\n M bench_profiles/single-h100-hbm-max.yaml\n M docs/architecture.md\n M docs/benchmarking.md\n M docs/hardware/single-h100.md\n M docs/milestones.md\n M rust/pose_filecoin_bridge/src/lib.rs\n M scripts/run_lab_matrix.sh\n M src/pose/benchmarks/harness.py\n M src/pose/benchmarks/summarize.py\n M src/pose/cli/bench.py\n M src/pose/common/host_lease.py\n M src/pose/filecoin/porep_unit.py\n M src/pose/filecoin/reference.py\n M src/pose/prover/grpc_service.py\n M src/pose/prover/host_worker.py\n M src/pose/prover/service.py\n M src/pose/verifier/host_planning.py\n M src/pose/verifier/service.py\n M src/pose/verifier/session_store.py\n M tests/e2e/test_real_filecoin_bridge.py\n M tests/unit/test_porep_unit_serialization.py\n M tests/unit/test_verifier_service.py\n?? .pose/\n?? src/pose/common/gpu_lease.py\n?? src/pose/verifier/gpu_planning.py\n?? src/pose/verifier/grpc_gpu_session.py\n?? tests/adversarial/test_gpu_phase2.py\n?? tests/performance/test_benchmark_reporting.py\n?? tests/unit/test_benchmark_harness.py\n?? tests/unit/test_gpu_lease.py\n?? tests/unit/test_gpu_planning.py",
+  "platform": "Linux-6.8.0-1045-gcp-x86_64-with-glibc2.39",
+  "python_executable": "/workspace/memory-sanitization/.venv/bin/python3",
+  "python_version": "3.12.13",
+  "rust_toolchain": "[toolchain]\nchannel = \"1.93.1\"\ncomponents = [\"clippy\", \"rustfmt\"]\nprofile = \"minimal\"\n",
+  "uv": "/usr/local/bin/uv"
+}

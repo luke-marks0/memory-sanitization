@@ -5,7 +5,7 @@ target_devices:
   gpus: [0]
 reserve_policy:
   host_bytes: 4294967296
-  per_gpu_bytes: 2147483648
+  per_gpu_bytes: 0
 host_target_fraction: 0.0
 per_gpu_target_fraction: 0.92
 porep_unit_profile: full-cache
@@ -21,4 +21,3 @@ cleanup_policy:
   zeroize: true
   verify_zeroization: false
 repetition_count: 3
-

@@ -185,6 +185,10 @@ def build_host_sector_plan(session_id: str, region_id: str, unit_count: int) -> 
     ]
 
 
+def build_region_sector_plan(session_id: str, region_id: str, unit_count: int) -> list[SectorPlanEntry]:
+    return build_host_sector_plan(session_id, region_id, unit_count)
+
+
 def build_minimal_host_session_plan(
     profile: BenchmarkProfile,
     *,

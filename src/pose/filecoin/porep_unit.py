@@ -183,6 +183,32 @@ def _normalize_extra_blobs(extra_blobs: Mapping[str, bytes] | None) -> tuple["Po
     return tuple(normalized)
 
 
+def _artifact_extra_blobs(
+    artifact: SealArtifact,
+    *,
+    storage_profile: str,
+) -> dict[str, bytes]:
+    encoded = dict(getattr(artifact, "extra_blobs_hex", None) or {})
+    if not encoded:
+        return {}
+
+    if storage_profile == "minimal":
+        wanted: set[str] = set()
+    elif storage_profile == "replica":
+        wanted = {"sealed_replica"}
+    else:
+        wanted = set(encoded)
+
+    normalized: dict[str, bytes] = {}
+    for kind in sorted(wanted):
+        payload = encoded.get(kind)
+        if payload is None:
+            continue
+        _ensure_blob_kind(kind)
+        normalized[kind] = bytes.fromhex(payload)
+    return normalized
+
+
 def _validate_blob_profile(storage_profile: str, blobs: tuple["PoRepUnitBlob", ...]) -> None:
     _ensure_storage_profile(storage_profile)
     blob_kinds = {blob.kind for blob in blobs}
@@ -438,6 +464,11 @@ def build_porep_unit_from_seal_artifact(
         else getattr(artifact, "inner_timings_ms", None)
     )
 
+    resolved_extra_blobs = {
+        **_artifact_extra_blobs(artifact, storage_profile=storage_profile),
+        **(dict(extra_blobs) if extra_blobs is not None else {}),
+    }
+
     blobs = _sort_blobs(
         (
             PoRepUnitBlob(kind="seal_proof", payload=proof_bytes),
@@ -453,7 +484,7 @@ def build_porep_unit_from_seal_artifact(
                     inner_timings_ms=normalized_timings,
                 ),
             ),
-            *_normalize_extra_blobs(extra_blobs),
+            *_normalize_extra_blobs(resolved_extra_blobs),
         )
     )
     _validate_blob_profile(storage_profile, blobs)

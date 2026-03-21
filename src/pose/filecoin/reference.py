@@ -83,6 +83,7 @@ class SealArtifact:
     comm_r_hex: str
     proof_hex: str
     inner_timings_ms: dict[str, int]
+    extra_blobs_hex: dict[str, str] | None = None
 
     def to_bridge_payload(self) -> dict[str, object]:
         return asdict(self)

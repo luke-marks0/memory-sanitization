@@ -72,8 +72,16 @@ Current implementation state:
   validate the outer host-memory proof, enforce deadlines, emit canonical
   result artifacts, and support retained resident sessions plus
   `pose verifier rechallenge --session-id ...`.
-- Later phases remain ahead: HBM, hybrid, scale-out, and parity-gated Python
-  promotion are not implemented yet.
+- Phase 2 single-H100 HBM PoSE is implemented on the current single-gpu path:
+  `pose verifier run --profile single-h100-hbm-max` and a gpu-only
+  `pose verifier run --plan plan.yaml` execute real verifier-owned CUDA IPC
+  HBM sessions, validate the inner Filecoin proof, validate the outer HBM
+  proof, enforce deadlines, emit canonical result artifacts, zeroize the
+  challenged device allocation on cleanup, archive benchmark bundles through
+  `pose bench run --profile single-h100-hbm-max`, and reject HBM sessions when
+  the leased device allocation does not actually contain the declared payload.
+- Later phases remain ahead: hybrid host plus HBM, multi-GPU scale-out, and
+  parity-gated Python promotion are not implemented yet.
 
 ## Repository shape
 
@@ -157,12 +165,14 @@ pose verifier verify-record result.json
 
 ```bash
 pose bench run --profile dev-small
+pose bench run --profile single-h100-hbm-max
 pose bench matrix --profiles bench_profiles/
 pose bench summarize results/*.json
 ```
 
-Only the current host-only `minimal` path is executable today. The shipped HBM
-and hybrid profile names are reserved for later phases.
+The current executable benchmark paths are the host-only `minimal` flow used by
+`dev-small` and the single-gpu HBM flow used by `single-h100-hbm-max`. Hybrid
+and multi-GPU profile names remain reserved for later phases.
 
 ## Expected output
 

@@ -4,6 +4,8 @@ from pathlib import Path
 
 from pose.protocol.result_schema import bootstrap_result
 from pose.verifier.service import VerifierService
+
+
 def test_run_plan_file_passes_loaded_session_plan(monkeypatch, tmp_path: Path) -> None:
     plan_path = tmp_path / "plan.yaml"
     plan_path.write_text(
@@ -64,3 +66,63 @@ retain_session: true
     assert captured["profile"].name == "dev-small"
     assert len(captured["kwargs"]["session_plan"].sector_plan) == 1
     assert captured["kwargs"]["session_plan"].sector_plan[0].sector_id == 4242
+
+
+def test_run_plan_file_dispatches_single_gpu_plan(monkeypatch, tmp_path: Path) -> None:
+    plan_path = tmp_path / "gpu-plan.yaml"
+    plan_path.write_text(
+        """
+session_plan:
+  session_id: planned-gpu-session
+  nonce: planned-gpu-nonce
+  profile_name: single-h100-hbm-max
+  porep_unit_profile: full-cache
+  challenge_leaf_size: 1048576
+  challenge_policy:
+    epsilon: 0.01
+    lambda_bits: 64
+    max_challenges: 1024
+  deadline_policy:
+    response_deadline_ms: 2200
+    session_timeout_ms: 1800000
+  cleanup_policy:
+    zeroize: true
+    verify_zeroization: false
+  unit_count: 1
+  regions:
+    - region_id: gpu-0
+      region_type: gpu
+      usable_bytes: 1048576
+      gpu_device: 0
+  sector_plan:
+    - region_id: gpu-0
+      unit_index: 0
+      prover_id_hex: "01"
+      sector_id: 4242
+      ticket_hex: "02"
+      seed_hex: "03"
+retain_session: false
+""".strip(),
+        encoding="utf-8",
+    )
+
+    captured = {}
+
+    def fake_run_gpu_session(profile, **kwargs):
+        captured["profile"] = profile
+        captured["kwargs"] = kwargs
+        result = bootstrap_result(profile_name=profile.name)
+        result.session_id = kwargs["session_plan"].session_id
+        result.session_nonce = kwargs["session_plan"].nonce
+        result.verdict = "SUCCESS"
+        result.success = True
+        return result
+
+    monkeypatch.setattr("pose.verifier.service.run_gpu_session_via_grpc", fake_run_gpu_session)
+
+    result = VerifierService().run_plan_file(plan_path)
+
+    assert result.success is True
+    assert result.session_id == "planned-gpu-session"
+    assert captured["profile"].target_devices == {"host": False, "gpus": [0]}
+    assert captured["kwargs"]["session_plan"].regions[0].gpu_device == 0

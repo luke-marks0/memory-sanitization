@@ -1,0 +1,132 @@
+{
+  "coverage_fraction": {
+    "mean": 1.0,
+    "p50": 1.0,
+    "p95": 1.0,
+    "p99": 1.0
+  },
+  "deadline_miss_rate": 0.0,
+  "per_device_hbm_coverage_bytes": {},
+  "real_porep_ratio": {
+    "mean": 1.0,
+    "p50": 1.0,
+    "p95": 1.0,
+    "p99": 1.0
+  },
+  "rechallenge_performance": null,
+  "result_count": 1,
+  "success_rate": 1.0,
+  "timings_ms": {
+    "allocation": {
+      "mean": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0
+    },
+    "challenge_response": {
+      "mean": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0
+    },
+    "cleanup": {
+      "mean": 1.0,
+      "p50": 1.0,
+      "p95": 1.0,
+      "p99": 1.0
+    },
+    "copy_to_hbm": {
+      "mean": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0
+    },
+    "copy_to_host": {
+      "mean": 1.0,
+      "p50": 1.0,
+      "p95": 1.0,
+      "p99": 1.0
+    },
+    "data_generation": {
+      "mean": 44051.0,
+      "p50": 44051.0,
+      "p95": 44051.0,
+      "p99": 44051.0
+    },
+    "discover": {
+      "mean": 210.0,
+      "p50": 210.0,
+      "p95": 210.0,
+      "p99": 210.0
+    },
+    "inner_verify": {
+      "mean": 12.0,
+      "p50": 12.0,
+      "p95": 12.0,
+      "p99": 12.0
+    },
+    "object_serialization": {
+      "mean": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0
+    },
+    "outer_tree_build": {
+      "mean": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0
+    },
+    "outer_verify": {
+      "mean": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0
+    },
+    "region_leasing": {
+      "mean": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0
+    },
+    "seal_commit_phase1": {
+      "mean": 16.0,
+      "p50": 16.0,
+      "p95": 16.0,
+      "p99": 16.0
+    },
+    "seal_commit_phase2": {
+      "mean": 43863.0,
+      "p50": 43863.0,
+      "p95": 43863.0,
+      "p99": 43863.0
+    },
+    "seal_pre_commit_phase1": {
+      "mean": 10.0,
+      "p50": 10.0,
+      "p95": 10.0,
+      "p99": 10.0
+    },
+    "seal_pre_commit_phase2": {
+      "mean": 135.0,
+      "p50": 135.0,
+      "p95": 135.0,
+      "p99": 135.0
+    },
+    "total": {
+      "mean": 44407.0,
+      "p50": 44407.0,
+      "p95": 44407.0,
+      "p99": 44407.0
+    }
+  },
+  "verdict_counts": {
+    "SUCCESS": 1
+  },
+  "verifier_cpu_time_ms": {
+    "mean": 177.0,
+    "p50": 177.0,
+    "p95": 177.0,
+    "p99": 177.0
+  }
+}

@@ -45,11 +45,6 @@ def _materialize_locally(
             leaf_alignment_bytes=leaf_size,
         )
         object_serialization_ms += int((perf_counter() - serialization_started) * 1000)
-        if len(unit.serialized_bytes) != leaf_size:
-            raise ResourceFailure(
-                "Current host worker expects each minimal PoRep unit to occupy exactly "
-                f"one leaf: got {len(unit.serialized_bytes)} bytes for leaf size {leaf_size}"
-            )
         artifacts.append(artifact)
         units.append(unit)
         payload_parts.append(unit.serialized_bytes)
