@@ -218,7 +218,11 @@ def plan_slot_layout(
         raise ProtocolError("Profile target_devices.gpus must be a list.")
     detected_gpu_bytes_by_device = detected_gpu_bytes_by_device or {}
     for device in gpu_targets:
-        available_bytes, total_bytes = detected_gpu_bytes_by_device.get(int(device), detect_gpu_memory_bytes(int(device)))
+        device = int(device)
+        if device in detected_gpu_bytes_by_device:
+            available_bytes, total_bytes = detected_gpu_bytes_by_device[device]
+        else:
+            available_bytes, total_bytes = detect_gpu_memory_bytes(device)
         budget_bytes = _budget_bytes(int(available_bytes), int(profile.reserve_policy.get("per_gpu_bytes", 0)))
         usable_bytes = _usable_bytes_from_budget(
             budget_bytes=budget_bytes,
@@ -234,7 +238,7 @@ def plan_slot_layout(
                 budget_bytes=budget_bytes,
                 usable_bytes=usable_bytes,
                 w_bytes=w_bytes,
-                gpu_device=int(device),
+                gpu_device=device,
             )
         )
 
