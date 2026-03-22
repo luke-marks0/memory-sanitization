@@ -1,25 +1,26 @@
-# Repository Specification: Python PoSE Using Real Filecoin PoRep
+# Repository Specification: Python PoSE Using Depth-Robust-Graph PoSE-DB
 
-**Status:** Draft v1  
-**Audience:** Maintainers and contributors implementing the repository  
+**Status:** Draft v2
+**Audience:** Maintainers and contributors implementing the repository
 **Normative language:** “must”, “must not”, “required”, “shall”, and “should” are normative unless a section is explicitly marked informative.
 
 ---
 
 ## 1. Purpose
 
-This repository shall implement a **real cryptographic proof of secure erasure (PoSE)** over **user-space accessible host memory and GPU HBM** by forcing a prover process to overwrite challenged memory regions with a **genuine Filecoin PoRep-derived object** and then prove possession of that object under verifier challenge.
+This repository shall implement a proof of secure erasure (PoSE) over user-space accessible host memory and GPU HBM using the depth-robust-graph PoSE-DB protocol described in the bundled paper.
 
-The repository is **Python-first** in the orchestration layer and **Rust-reference-backed** in the cryptographic layer:
+The repository is Python-first in orchestration and reference semantics, with optional native acceleration for performance-critical paths:
 
-- Python owns the CLI, prover process, verifier process, protocol, region planning, memory allocators, benchmarking, result reporting, and the staged Filecoin port.
-- Vendored Filecoin Rust code owns the production inner PoRep path until an explicit parity-gated promotion moves a component into the Python port.
+- Python owns the CLI, prover process, verifier process, protocol, region planning, memory allocators, benchmarking, result reporting, and the reference graph construction and labelling semantics.
+- Optional Rust and CUDA components may accelerate graph construction, label generation, challenge handling, and HBM transfers, but they must remain semantically identical to the Python reference implementation.
 
-The top priority is correctness and cryptographic credibility:
+The top priority is correctness and claim discipline:
 
-1. The inner proof must be a real Filecoin PoRep produced by the official Rust implementation.
-2. The outer proof must prove storage of the concrete PoRep object resident in the challenged host/HBM region.
-3. The repository must keep prover and verifier concerns cleanly separated so that the PoSE can be benchmarked, stressed, and iterated on without compromising the security story.
+1. The production protocol must be the graph-based PoSE-DB protocol grounded in the bundled paper’s formal model.
+2. The prover must overwrite the challenged memory budget with the session’s graph-label state and then answer timed challenge rounds correctly.
+3. The repository must keep prover and verifier responsibilities cleanly separated so that the protocol can be benchmarked, stressed, and iterated on without weakening the security story.
+4. The repository must report theorem-level claims and engineering-level region claims honestly and separately.
 
 ---
 
@@ -29,73 +30,125 @@ The top priority is correctness and cryptographic credibility:
 
 The repository must:
 
-- implement a **real Filecoin PoRep** path using vendored upstream Rust code;
-- expose that path through a thin Rust bridge to Python;
-- implement a **clean prover/verifier split** as separate processes;
-- implement PoSE for:
+- implement the graph-based PoSE-DB protocol using a depth-robust graph construction faithful to the bundled paper;
+- implement a clean prover/verifier split as separate processes;
+- implement PoSE sessions over:
   - host memory only,
   - GPU HBM only,
-  - hybrid host + HBM sessions;
+  - hybrid host + HBM memory layouts;
 - support a CLI that runs the erasure protocol and outputs:
-  - whether the PoSE succeeded,
+  - whether the session succeeded,
   - how much memory was covered,
+  - what soundness model and bound were used,
   - how long each stage took;
-- maximize coverage of **user-space accessible** memory on:
+- maximize coverage of user-space accessible memory on:
   - an initial single-H100 machine,
   - a later 8×H100 machine;
 - include a comprehensive test suite that proves:
-  - the inner Filecoin functionality is real,
-  - the Python mirror is identical where required,
-  - the PoSE protocol behaves correctly and fails safely.
+  - graph construction is correct,
+  - label generation is deterministic and parity-checked,
+  - the PoSE-DB protocol behaves correctly and fails safely,
+  - timing calibration enforces the required `q < γ` condition for production profiles.
 
 ### 2.2 Secondary goals
 
 The repository should:
 
 - support local benchmarking and repeated rechallenge runs;
-- make it easy to compare host-only, HBM-only, and hybrid PoSE profiles;
-- allow staged migration of deterministic Filecoin subcomponents into Python;
-- preserve a strong audit trail back to upstream Filecoin code.
+- make it easy to compare host-only, HBM-only, and hybrid profiles;
+- support multiple hash backends behind one canonical session specification;
+- provide a pure Python reference implementation and native accelerators with parity gates;
+- preserve a strong audit trail from implementation choices back to the bundled paper.
 
 ---
 
 ## 3. Non-goals
 
-The repository does **not** claim to solve or provide:
+The repository does not claim to solve or provide:
 
 - kernel-level or firmware-level memory erasure;
-- attestation of inaccessible memory or privileged memory;
+- attestation of inaccessible, privileged, or kernel-owned memory;
 - erasure guarantees for disk, SSD, NVMe, or remote storage;
 - protection against a malicious OS kernel, malicious NVIDIA driver, or malicious device firmware;
-- production blockchain integration;
-- “fake”, “synthetic”, or shortcut Filecoin proofs in production mode.
+- secure-hardware-based attestation;
+- unconditional theorem-level guarantees for a concrete hash backend beyond the random-oracle heuristic used by the bundled paper;
+- exclusive residency in a specific memory tier unless that stronger claim is separately documented and justified;
+- production use of the paper’s unconditional O(n) communication PoSE protocol, except optionally as a benchmark or test comparator.
 
-The repository’s security claims are limited to the declared protocol, the challenged user-space memory regions, and the trusted-computing-base assumptions documented below.
+The repository’s security claims are limited to the declared protocol, the challenged user-space memory regions, the attacker-budget assumptions used by the verifier, and the trusted-computing-base assumptions documented below.
 
 ---
 
-## 4. Core security statement
+## 4. Normative protocol reference and core security statement
 
-A PoSE session is considered **successful** only if all of the following hold:
+### 4.1 Bundled reference
 
-1. The prover produced one or more **real Filecoin PoRep sector proofs** using the vendored upstream Rust pipeline.
-2. The verifier accepted those sector proofs using the official verification path.
-3. The prover serialized a canonical **PoRep object** into the challenged host/HBM region(s).
-4. The verifier accepted a time-bounded outer proof of storage over those serialized bytes.
-5. The challenged object occupied at least the configured fraction of the challenged user-space region budget.
-6. The prover satisfied the verifier’s challenge deadline.
+The repository shall include the paper at:
 
-A successful PoSE therefore means:
+  docs/references/software-based-memory-erasure-relaxed-isolation.pdf
 
-- the prover demonstrated possession of a **real Filecoin PoRep artifact**; and
-- the prover demonstrated timely possession of the bytes currently committed in the challenged memory region.
+For the purposes of this repository, this is the bundled reference paper.
 
-This repository shall implement that security claim as the conjunction of:
+The following are authoritative from the bundled paper unless this spec explicitly narrows or operationalizes them:
 
-- an **inner proof**: Filecoin PoRep; and
-- an **outer proof**: timed proof of storage over the in-memory serialized PoRep object.
+- the PoSE-DB session model;
+- the graph-based PoSE scheme;
+- the definitions of `(m, γ)`-depth-robustness, graph-restricted adversary, and in-place labelling;
+- the single-round and multi-round soundness bounds.
 
-Neither proof alone is sufficient.
+The implementation target is the graph-based protocol corresponding to the paper’s formal model and depth-robust-graph construction, adapted to verifier-owned host and HBM leases.
+
+### 4.2 Session success
+
+A PoSE session is considered successful only if all of the following hold:
+
+1. The verifier chose a session seed and graph/session parameters for the active profile.
+2. The prover materialized the session label array
+   `σ = l(o1) || l(o2) || ... || l(om)`
+   into the leased challenged regions according to the canonical region plan.
+3. The verifier executed `r` fast challenge-response rounds.
+4. In every round:
+   - the verifier challenged one uniformly random challenge-set position,
+   - the prover returned the correct label,
+   - the verifier received the response within the configured per-round deadline `Δ`.
+5. The active profile’s calibration established a conservative `q` with `q < γ`.
+6. The covered-byte fraction met the configured coverage threshold.
+7. Cleanup and release semantics were carried out or any failure was explicitly reported.
+
+### 4.3 Theorem-level security interpretation
+
+Under the bundled paper’s model, a successful session means:
+
+- the prover answered timed challenge rounds for labels derived from the session seed and active graph descriptor; and
+- given the active attacker-budget assumption `M`, the verifier can report the corresponding soundness bound from the bundled paper.
+
+For reporting, the verifier shall compute a bound of the form:
+
+  Pr[success] <= (M' / m)^r + 2^(-w0)
+
+where the active adversary model determines `M'` and `w0` as in the bundled paper:
+
+- graph-restricted model:
+  - `w0 = w_bits`
+  - `M' = ceil(M_bits / w_bits)`
+
+- general model:
+  - `w0 = w_bits - log2(m) - log2(q)`
+  - `M' = ceil(M_bits / w0)`
+
+If implementation rounding is required, it must be conservative in the verifier’s favour.
+
+### 4.4 Claim discipline
+
+The repository shall distinguish two claim classes:
+
+- formal claim:
+  a theorem-based claim about local storage under the bundled paper’s model, using the configured `M`, `r`, `q`, `γ`, and `w_bits`;
+
+- operational claim:
+  an engineering claim that the canonical storage location for the challenged labels was a specific verifier-leased host/HBM region layout.
+
+The repository must never present an operational claim as though it were fully implied by the theorem when additional local-memory-tier assumptions are required.
 
 ---
 
@@ -103,10 +156,13 @@ Neither proof alone is sufficient.
 
 The verifier process owns the challenged memory allocations and leases them to the prover process:
 
-- for host memory: shared anonymous mappings, `memfd`, or equivalent verifier-owned shared mappings;
-- for HBM: verifier-owned CUDA allocations exported to the prover by CUDA IPC handles or an equivalent same-host device-sharing mechanism.
+- for host memory:
+  shared anonymous mappings, `memfd`, or equivalent verifier-owned shared mappings;
 
-The verifier chooses the exact challenged user-space regions, can account for their size, can track lifecycle, and can enforce cleanup semantics.
+- for HBM:
+  verifier-owned CUDA allocations exported to the prover by CUDA IPC handles or an equivalent same-host device-sharing mechanism.
+
+The verifier chooses the exact challenged user-space regions, can account for their size, can track their lifecycle, and can enforce cleanup semantics.
 
 ---
 
@@ -114,66 +170,169 @@ The verifier chooses the exact challenged user-space regions, can account for th
 
 ### 6.1 Attacker model
 
-The prover process may be adversarial and may attempt to:
+The prover process may be adversarial and may communicate with an external conspirator. It may attempt to:
 
-- reuse stale but valid old Filecoin proofs;
-- prove storage of different bytes than the genuine PoRep object;
-- keep the object outside the challenged region and copy only challenged leaves on demand;
-- partially overwrite a region rather than fully filling it;
-- exploit protocol ambiguity, replay, race conditions, or stale manifests;
-- respond after a delay that hides reconstruction or fetch costs.
+- store only part of the label set and recompute missing labels on demand;
+- keep the label state outside the challenged regions and answer from another local store;
+- use unchallenged host memory, HBM, pinned buffers, or stage buffers as hidden state;
+- partially overwrite a region rather than fully filling the planned label slots;
+- replay stale session seeds or stale labels;
+- exploit protocol ambiguity, race conditions, transport jitter, or stale manifests;
+- answer after a delay that hides reconstruction, copying, or tier-crossing costs.
 
-### 6.2 Trusted computing base
+### 6.2 Distant-attacker assumption
+
+The bundled paper replaces full isolation with a distant-attacker assumption.
+
+This repository shall interpret that assumption operationally as follows:
+
+- a remote conspirator may assist before and between fast rounds;
+- during a single timed fast round, only the local prover state may be relied upon;
+- the configured deadline `Δ` and the measured `q` must make it implausible for the prover to recompute missing labels fast enough within one round.
+
+### 6.3 Random-oracle assumption
+
+The bundled paper’s graph-based security proof is in the random-oracle model.
+
+This repository shall therefore:
+
+- state clearly that its theorem-based claims rely on the random-oracle heuristic for the selected concrete hash backend;
+- treat the concrete hash backend as a practical instantiation of the paper’s `h`;
+- avoid wording that implies a stronger theorem for the concrete backend than the paper provides.
+
+### 6.4 Trusted computing base
 
 The trusted computing base includes:
 
 - the verifier process;
 - the operating system kernel;
-- the file/memory sharing primitives used for leased regions;
-- the Rust bridge and vendored Filecoin Rust code;
+- the file and memory sharing primitives used for leases;
 - the Python verifier implementation;
+- the reference graph construction and label semantics;
+- any enabled native acceleration modules;
+- the hash backend used to instantiate the paper’s random oracle;
 - the CUDA runtime and NVIDIA driver in HBM mode;
-- the cryptographic hash used for the outer proof.
+- the clock source and timing instrumentation used by the verifier.
 
-### 6.3 Timing assumption
+### 6.5 Local-memory-budget assumption
 
-The outer PoSE is time-bounded. The verifier’s deadline assumes:
+The paper’s theorem reasons about the attacker’s local state budget `M` during the fast phase.
 
-- proving possession of bytes already resident in the challenged region is faster than:
-  - reconstructing the PoRep object,
-  - fetching it from elsewhere,
-  - or moving it from a non-challenged location into the challenged region after challenge.
+For this repository:
 
-The protocol shall therefore maintain separate benchmark data for:
+- all unchallenged local memory that could hold useful label state must be counted toward `M` unless a stronger exclusion mechanism is documented and justified;
+- this includes, where applicable:
+  - unchallenged host memory,
+  - unchallenged HBM,
+  - managed-memory mirrors,
+  - pinned host buffers,
+  - stage buffers not zeroized before the fast phase,
+  - scratch files or mapped buffers usable at fast-round speed.
 
-- resident-response time;
-- copy-from-alternate-store time;
-- rebuild-or-rematerialize time.
+The verifier must report `M` honestly. It must not silently assume that an unchallenged local tier is unavailable to the attacker.
 
-### 6.4 Coverage claim
+#### 6.5.1 Development-only lowered-`M` mode
+
+For host-only development and test profiles, the repository may support a
+development-only `process_budget_dev` mode in which the configured attacker
+budget `M_dev` is set artificially below the machine's full local-memory
+budget.
+
+This mode exists only to make local testing, calibration, and regression runs
+practical on ordinary rented or shared compute. It must not be used to justify
+production or theorem-level claims about the prover's true full local memory.
+
+When this mode is used:
+
+- the active profile must be explicitly marked as development-only via
+  `process_budget_dev`;
+- the result artifact must state that `M` was lowered artificially for
+  development;
+- the verifier must record the configured development attacker budget;
+- the prover launcher may apply best-effort process-local limits such as
+  `RLIMIT_AS`, `RLIMIT_MEMLOCK`, and `RLIMIT_FSIZE`;
+- the prover launcher may hide GPUs from the prover process;
+- production profiles must not use this mode.
+
+The process-local limit may be larger than the reported development attacker
+budget because the Python prover runtime itself requires non-trivial address
+space. This mode is therefore an engineering convenience, not a claim that the
+process limit equals the prover's true full local-memory budget.
+
+#### 6.5.2 What development-only lowering does not justify
+
+The following do not justify reporting a lowered development `M` as though it
+were the prover's true full local-memory budget:
+
+- process-local `ulimit` or `RLIMIT_AS` limits;
+- hiding GPUs from the process while leaving the surrounding host unchanged;
+- a memory limit that applies only to one process but not to helper processes;
+- advisory cleanup of temporary files or pinned buffers without hard limits.
+
+Such mechanisms may still be useful for development and regression control, but
+they must not be reported as production attacker-budget accounting.
+
+### 6.6 Tier-specific claim caveat
+
+The theorem-level claim is about local storage, not intrinsically about one physical memory tier.
+
+Therefore:
+
+- host-only, HBM-only, and hybrid sessions may all be benchmarked;
+- a profile that challenges only one tier must include the other local tiers in the attacker-budget accounting unless they are explicitly constrained by additional documented mechanisms;
+- the repository must not describe an HBM-only or host-only run as proving exclusive residency in that tier unless that stronger claim is separately justified.
+
+### 6.7 Coverage claim
 
 The repository may only claim coverage for:
 
-- the challenged leased/declared host-memory regions;
-- the challenged leased/declared HBM regions.
+- the challenged leased host-memory regions;
+- the challenged leased HBM regions.
 
-It must never report “box memory erased” or “full GPU erased” unless the reported coverage explicitly equals the measured user-space accessible capacity under the active benchmark profile.
+It must never report “box memory erased” or “full GPU erased” unless the reported coverage equals the measured user-space accessible capacity under the active profile and the attacker-budget accounting across remaining local tiers is made explicit.
 
 ---
 
 ## 7. Terminology
 
-- **PoRep unit**: one real Filecoin sealing instance and its associated serialized artifacts.
-- **Region**: one challenged memory allocation, either host or HBM.
-- **Region payload**: the raw bytes written into a challenged region.
-- **Session**: one verifier challenge and the prover’s full response.
-- **Coverage bytes**: bytes in challenged regions whose contents are committed by the outer proof.
-- **Real PoRep bytes**: bytes in the payload that correspond to genuine Filecoin PoRep artifacts.
-- **Tail filler bytes**: deterministic committed bytes used only for minimal end-of-region alignment when an exact fit is impossible.
-- **Fill ratio**: `covered_bytes / usable_region_bytes`.
-- **Real-PoRep ratio**: `real_porep_bytes / covered_bytes`.
-- **Lease**: a verifier-owned region handle granted to the prover.
-- **Rechallenge**: an outer challenge against a previously materialized in-memory object without rebuilding it.
+- `w_bits`:
+  label width in bits, matching the bundled paper’s notation.
+- `w_bytes`:
+  `w_bits / 8`.
+- `m`:
+  number of challengeable labels in the active session.
+- `γ`:
+  minimum path-length parameter guaranteed by the active graph construction.
+- `q`:
+  conservative upper bound on hash-oracle queries or equivalent local recomputation work that can fit in one fast round under the active deadline.
+- `M_bits`:
+  assumed attacker local-state budget during the fast phase, in bits.
+- `graph descriptor`:
+  canonical description of the active graph family, parameters, challenge-set ordering, hash backend, and label width.
+- `O(G)`:
+  ordered challenge set of graph nodes used by the active session.
+- `label array`:
+  the ordered byte string `σ = l(o1) || ... || l(om)`.
+- `slot`:
+  one label-sized challengeable storage unit in a leased region.
+- `region`:
+  one challenged memory allocation, either host or HBM.
+- `covered bytes`:
+  bytes occupied by full challengeable slots.
+- `slack bytes`:
+  bytes in usable challenged regions that are not part of any full slot.
+- `fast round`:
+  one timed challenge-response exchange over a single challenge-set position.
+- `lease`:
+  a verifier-owned region handle granted to the prover.
+- `graph-restricted`:
+  used in the sense of the bundled paper.
+- `rechallenge`:
+  a new fast phase against an already resident label array without rebuilding it.
+- `formal claim`:
+  theorem-based claim under the paper’s model.
+- `operational claim`:
+  engineering claim about the intended physical placement of label slots.
 
 ---
 
@@ -183,47 +342,79 @@ It must never report “box memory erased” or “full GPU erased” unless the
 
 The repository shall contain these top-level implementation components:
 
-1. **Vendored Filecoin workspace**
-   - exact upstream snapshot of the relevant Rust workspace.
+1. Bundled paper and proof notes
+   - the reference PDF and implementation-facing notes.
 
-2. **Rust bridge**
-   - thin wrapper that exposes the official Filecoin sealing and verification path to Python.
+2. Python reference graph and label library
+   - deterministic graph construction,
+   - challenge-set ordering,
+   - reference hash encoding,
+   - reference label derivation,
+   - reference soundness calculations.
 
-3. **Python prover**
+3. Optional native acceleration
+   - Rust and/or CUDA modules for performance-critical paths,
+   - always parity-gated against the Python reference.
+
+4. Python prover
    - region intake,
    - session execution,
+   - label generation,
    - materialization into host/HBM,
-   - outer proof generation,
-   - timing collection.
+   - fast-round responses,
+   - timing collection,
+   - cleanup.
 
-4. **Python verifier**
+5. Python verifier
    - region leasing,
    - session planning,
-   - inner verification,
-   - outer challenge generation and checking,
+   - seed generation,
+   - expected-response preparation,
+   - challenge generation,
+   - per-round deadline enforcement,
+   - soundness reporting,
    - final verdict construction.
 
-5. **CLI**
-   - user-facing entrypoint for prover, verifier, and benchmark workflows.
+6. CLI
+   - user-facing entry points for prover, verifier, calibration, and benchmarking workflows.
 
-6. **Benchmark harness**
+7. Benchmark harness
    - named profiles,
-   - repeatable measurement runs,
+   - repeatable calibration and timing runs,
    - artifact production.
 
-7. **Python Filecoin mirror/port**
-   - staged deterministic subcomponents and, later, a full Python port gated by parity.
+### 8.2 Architectural principle: one protocol, two phases
 
-### 8.2 Architectural principle: two proofs, two boundaries
+The architecture must preserve one clean protocol with two phases:
 
-The architecture must preserve two clean boundaries:
+- initialization phase:
+  derive and store the graph-label state from the session seed;
 
-- **inner proof boundary**
-  - Filecoin sealing and verification logic;
-- **outer proof boundary**
-  - PoSE-specific region commitment and challenge protocol.
+- fast phase:
+  issue timed single-label challenges against that resident state.
 
-The outer proof must never replace the inner proof, and the inner proof must never be mistaken for proof that the challenged region currently contains the object.
+The repository must not reintroduce a separate multi-proof layering split. The graph-based PoSE-DB protocol itself is the required proof mechanism.
+
+### 8.3 Reference-before-acceleration principle
+
+The Python reference implementation is authoritative for semantics.
+
+Native accelerators may optimize:
+
+- implicit graph traversal,
+- label generation,
+- HBM writes,
+- challenge lookup paths,
+- hash backend throughput,
+
+but they must not change:
+
+- the graph family,
+- the challenge distribution,
+- the label equations,
+- the challenge-set ordering,
+- the acceptance rule,
+- the reported soundness model.
 
 ---
 
@@ -231,444 +422,580 @@ The outer proof must never replace the inner proof, and the inner proof must nev
 
 The repository shall use the following structure or a structure equivalent in clarity and separation:
 
-```text
-repo/
-  README.md
-  LICENSE
-  THIRD_PARTY_NOTICES.md
-  pyproject.toml
-  Cargo.toml
-  Makefile
+  repo/
+    README.md
+    LICENSE
+    THIRD_PARTY_NOTICES.md
+    pyproject.toml
+    Cargo.toml
+    Makefile
 
-  docs/
-    repository-spec.md
-    architecture.md
-    threat-model.md
-    protocol.md
-    benchmarking.md
-    upstream-sync.md
-    result-schema.md
-    hardware/
-      single-h100.md
-      eight-h100.md
+    docs/
+      repository-spec.md
+      architecture.md
+      threat-model.md
+      protocol.md
+      graph-construction.md
+      security-model.md
+      benchmarking.md
+      result-schema.md
+      references/
+        software-based-memory-erasure-relaxed-isolation.pdf
+      hardware/
+        single-h100.md
+        eight-h100.md
 
-  vendor/
-    rust-fil-proofs/
-    UPSTREAM.lock
+    rust/
+      pose_accel_bridge/
+      pose_reference_kernels/
 
-  rust/
-    pose_filecoin_bridge/
-    pose_test_hooks/
+    cuda/
+      pose_label_kernels/
+      pose_copy_kernels/
 
-  proto/
-    pose/v1/session.proto
+    proto/
+      pose/v1/session.proto
 
-  src/pose/
-    __init__.py
-    version.py
+    src/pose/
+      __init__.py
+      version.py
 
-    cli/
-      main.py
-      prover.py
-      verifier.py
-      bench.py
+      cli/
+        main.py
+        prover.py
+        verifier.py
+        bench.py
+        calibrate.py
 
-    common/
-      errors.py
-      hashing.py
-      timing.py
-      units.py
-      env.py
-      logging.py
+      common/
+        errors.py
+        timing.py
+        units.py
+        env.py
+        logging.py
+        cbor.py
 
-    protocol/
-      messages.py
-      codec.py
-      session_ids.py
-      result_schema.py
+      protocol/
+        messages.py
+        codec.py
+        session_ids.py
+        result_schema.py
 
-    filecoin/
-      reference.py
-      mirror/
-        replica_id.py
-        parents.py
-        labels.py
-        comms.py
-      port/
-        README.md
-        experimental/
+      graphs/
+        construction.py
+        connectors.py
+        factory.py
+        ordering.py
+        descriptors.py
+        depth_robustness.py
+        inplace.py
+        implicit.py
 
-    prover/
-      service.py
-      session.py
-      planner.py
-      object_builder.py
-      challenge.py
-      cleanup.py
-      regions.py
-      memory/
-        host.py
-        gpu.py
+      hashing/
+        random_oracle.py
+        encoding.py
+        blake3_backend.py
+        shake256_backend.py
 
-    verifier/
-      service.py
-      policy.py
-      deadlines.py
-      leasing.py
-      challenge.py
-      result_writer.py
+      prover/
+        service.py
+        session.py
+        planner.py
+        labeler.py
+        challenge.py
+        cleanup.py
+        regions.py
+        memory/
+          host.py
+          gpu.py
 
-    benchmarks/
-      harness.py
-      profiles.py
-      summarize.py
+      verifier/
+        service.py
+        policy.py
+        deadlines.py
+        leasing.py
+        challenges.py
+        expected_labels.py
+        soundness.py
+        result_writer.py
 
-  bench_profiles/
-    dev-small.yaml
-    single-h100-host-max.yaml
-    single-h100-hbm-max.yaml
-    single-h100-hybrid-max.yaml
-    eight-h100-hbm-max.yaml
-    eight-h100-hybrid-max.yaml
+      benchmarks/
+        harness.py
+        profiles.py
+        summarize.py
+        calibration.py
 
-  scripts/
-    sync_upstream.sh
-    gen_test_vectors.py
-    run_lab_matrix.sh
+    bench_profiles/
+      dev-small.yaml
+      single-h100-host-max.yaml
+      single-h100-hbm-max.yaml
+      single-h100-hybrid-max.yaml
+      eight-h100-hbm-max.yaml
+      eight-h100-hybrid-max.yaml
 
-  tests/
-    unit/
-    parity/
-    integration/
-    e2e/
-    adversarial/
-    hardware/
-    performance/
-```
+    scripts/
+      gen_graph_vectors.py
+      run_lab_matrix.sh
+      profile_hash_q.py
+
+    tests/
+      unit/
+      parity/
+      integration/
+      e2e/
+      adversarial/
+      hardware/
+      performance/
 
 ### 9.1 Separation invariant
 
-The verifier package must not import prover-only modules.  
-The prover package must not contain verifier decision logic.  
+The verifier package must not import prover-only modules.
+The prover package must not contain verifier decision logic.
 Shared data structures must live only in `src/pose/protocol/` and `src/pose/common/`.
+Reference graph semantics must live only in `src/pose/graphs/` and `src/pose/hashing/`.
 
 ---
 
-## 10. Upstream Filecoin integration requirements
+## 10. Protocol reference and conformance policy
 
-### 10.1 Vendoring rule
+### 10.1 Required production protocol
 
-The repository must vendor the **actual upstream Rust workspace snapshot**, not a copy-pasted subset of source files.
+The required production protocol is the graph-based PoSE-DB protocol from the bundled paper.
 
-### 10.2 Pinned upstream snapshot
+The repository may include the unconditional protocol from the same paper only as:
 
-The repository must include `vendor/UPSTREAM.lock` containing at least:
+- a test oracle,
+- a research comparator,
+- or a benchmark baseline.
 
-- upstream repository URL;
-- upstream commit SHA;
-- upstream tag if any;
-- sync date;
-- local patch status.
+It must not be the default production mode described by this spec.
 
-### 10.3 Patch policy
+### 10.2 Paper sections with implementation force
 
-Direct edits under `vendor/rust-fil-proofs/` are forbidden by default.
+The implementation shall be traceable to:
 
-If an emergency patch is required:
+- the paper’s formal PoSE-DB model for session structure and attacker model;
+- the paper’s graph-based PoSE scheme for `Setup`, `Precmp`, `Chal`, `Resp`, and `Vrfy`;
+- the paper’s depth-robust graph construction for the active graph family and its arbitrary-`m` extension.
 
-- it must be applied through an explicit patch mechanism;
-- the patch must be documented in `docs/upstream-sync.md`;
-- CI must fail if the patch is not explicitly acknowledged;
-- parity and upstream tests must still pass.
+### 10.3 Conformance boundary
 
-### 10.4 Thin bridge rule
+Optimizations are allowed only if they preserve the semantics of:
 
-The Rust bridge must be thin. It may:
+- graph construction,
+- node ordering,
+- predecessor ordering,
+- challenge-set ordering,
+- label derivation,
+- challenge distribution,
+- response verification,
+- soundness calculation.
 
-- construct configs,
-- call official sealing functions,
-- call official verification functions,
-- expose deterministic checkpoints for parity tests,
-- normalize errors,
-- return timing data.
+Any change outside that boundary is a protocol change and requires a spec revision.
 
-It must not:
+### 10.4 Optimization boundary
 
-- replace the core proving algorithm with local approximations;
-- silently fall back to fake/synthetic shortcuts;
-- mutate upstream semantics.
+The repository may optimize:
+
+- graph generation by implicit representation,
+- recursion scheduling,
+- host/HBM materialization strategy,
+- hash throughput,
+- verifier precomputation strategy,
+- transport framing for the fast phase,
+
+but it must not change the acceptance condition or what bytes are considered covered.
 
 ### 10.5 Production shortcut ban
 
-Production code must not call any shortcut or fake-proof path, including but not limited to:
+Production code must not:
 
-- `fauxrep`
-- `fauxrep2`
-- `fauxrep_aux`
-- synthetic proof helpers
-- any “fake seal” or “fake proof” benchmark-only path
+- replace the active graph family with a toy or unproven substitute;
+- answer fast rounds from an undeclared external response table rather than the resident session label state;
+- compress the label array with an undeclared scheme and expand it on the fast path while still claiming the covered bytes as resident;
+- silently fall back to an untimed or post-hoc verification mode;
+- change the fast-round challenge distribution away from independent uniform sampling over the global challenge set without separate analysis;
+- use unified/managed GPU memory in production mode while reporting HBM-specific coverage without making that downgrade explicit;
+- keep stage copies outside the challenged regions past the fast-phase start without counting them toward the attacker budget.
 
-CI shall include a forbidden-symbol scan that fails if production code references banned paths.
+CI shall include checks that fail if production builds enable banned testing or shortcut flags.
 
 ---
 
-## 11. Python Filecoin implementation policy
+## 11. Reference implementation and acceleration policy
 
-### 11.1 What must be Python from day one
+### 11.1 Python reference scope
 
-Python must own:
+Python must own, from day one:
 
-- prover/verifier process lifecycle;
-- CLI;
-- region planning and allocation orchestration;
-- outer proof implementation;
-- result reporting;
-- benchmark harness;
-- deterministic Filecoin mirrors needed for parity.
+- the reference graph factory;
+- the canonical graph descriptor encoding;
+- the canonical challenge-set ordering;
+- the canonical label derivation logic;
+- the soundness calculator;
+- the planner that maps label slots into leased regions;
+- the verifier logic.
 
-### 11.2 Staged port policy
+### 11.2 Native acceleration policy
 
-The repository must include a staged Python port under `src/pose/filecoin/port/`.
+Rust and CUDA modules may accelerate:
 
-Promotion from Rust-backed to Python-implemented components shall happen only when the specific component:
+- implicit graph traversal,
+- connector evaluation,
+- label generation,
+- HBM copy and lookup paths,
+- hash backends.
 
-1. has a clear reference boundary;
-2. has exhaustive parity vectors;
+They must not become authoritative for semantics until parity tests pass.
+
+### 11.3 Promotion policy
+
+A native accelerated path may replace the Python reference path for production execution only when the specific component:
+
+1. has a clear semantic boundary;
+2. has exhaustive small-case parity vectors;
 3. passes deterministic equivalence tests;
-4. does not weaken the security claim.
+4. does not weaken the soundness report or claim scope.
 
-### 11.3 Initial Python mirror scope
+### 11.4 Implicit-graph requirement
 
-The initial Python mirror should include deterministic pieces only:
+Because the paper’s graph family has superlinear node count in `m`, production implementations shall represent the graph implicitly.
 
-- replica-id derivation;
-- DRG parent generation;
-- expander parent generation;
-- label derivation where feasible;
-- commitment assembly logic;
-- canonical serialization logic for PoRep units and region manifests.
+They must not fully materialize all vertices and edges for large production sessions.
 
-### 11.4 Full Python port aspiration
+Explicit graph materialization is allowed only for:
 
-A full Python PoRep port may be pursued, but the repository’s production claim of “real Filecoin PoRep” shall remain tied to the vendored upstream path until the Python port has a formal promotion decision backed by parity results.
+- small reference tests,
+- exhaustive small-`n` proofs,
+- debugging tools.
 
 ---
 
-## 12. Canonical PoRep unit
+## 12. Graph construction and label semantics
 
-### 12.1 Definition
+### 12.1 Required graph family
 
-A **PoRep unit** is the atomic real Filecoin object stored in memory. A PoRep unit must correspond to one real upstream sealing run.
+The required production graph family is:
 
-### 12.2 Required fields
+  pose-db-drg-v1
 
-Each PoRep unit must include, at minimum:
+This denotes a faithful implementation of the bundled paper’s depth-robust graph construction and its arbitrary-`m` extension.
 
-- protocol version;
-- upstream snapshot identifier;
-- proof type / PoRep config identifier;
-- sector size;
-- prover id;
-- sector id;
-- ticket;
-- seed;
-- piece information;
-- `comm_d`;
-- `comm_r`;
-- seal proof bytes;
-- manifest of included auxiliary artifacts;
-- timing information for the inner proof phases.
+### 12.2 Arbitrary-`m` construction
 
-### 12.3 Storage profiles
+For a target label count `m`, the graph factory shall choose the smallest integer `n` such that:
 
-The repository shall support these PoRep unit storage profiles:
+  2^(n+1) >= m
 
-#### `minimal`
-Contains:
-- manifest,
-- public inputs,
-- proof bytes,
-- verification-relevant metadata.
+and construct a graph `G` with an ordered challenge set `O(G)` such that:
 
-Use only for CI and debugging.  
-Not suitable for maximum-coverage PoSE.
+- `|O(G)| = m`
+- the graph is `(m, 2^n)`-depth-robust with respect to `O(G)`
+- the graph can be labelled in-place with respect to `O(G)`
 
-#### `replica`
-Contains:
-- everything in `minimal`;
-- sealed replica bytes.
+The resulting `γ` for the session is therefore:
 
-Suitable for realistic memory coverage.
+  γ = 2^n
 
-#### `full-cache` (default production profile)
-Contains:
-- everything in `replica`;
-- proving auxiliaries and cache artifacts required to avoid recomputation where available.
+### 12.3 Node IDs and ordering
 
-This is the default because it maximizes real-PoRep occupancy.
+The implementation must define:
 
-### 12.4 Canonical serialization
+- a deterministic topological node numbering;
+- a deterministic predecessor ordering for every node;
+- a deterministic ordered challenge set `O(G) = (o1, ..., om)`.
 
-PoRep units must have a deterministic serialization.
+These rules must be versioned as part of the graph descriptor.
 
-The required format is:
+### 12.4 Label width
 
-1. **manifest** encoded in deterministic CBOR;
-2. **blob table** with deterministic ordering;
-3. **blob payloads** concatenated in manifest order;
-4. **alignment** to the configured region leaf size;
-5. **per-blob SHA-256 digests** recorded in the manifest.
+`w_bits` must be:
 
-The ordering of blob kinds must be fixed and versioned.
+- byte aligned,
+- at least 128 bits,
+- 256 bits by default in production profiles.
 
-### 12.5 Allowed blob kinds
+`w_bytes` is derived from `w_bits`.
 
-The manifest may include these blob kinds:
+### 12.5 Session seed and random-oracle instantiation
 
-- `seal_proof`
-- `sealed_replica`
-- `tree_c`
-- `tree_r_last`
-- `persistent_aux`
-- `temporary_aux`
-- `labels`
-- `cache_file`
-- `public_inputs`
-- `proof_metadata`
+The verifier shall choose a fresh session seed of at least 256 bits for every new session.
 
-Blob kinds must be explicitly labeled. Unknown blob kinds must cause parse failure unless the session version explicitly allows them.
+The implementation shall instantiate the paper’s hash oracle as a concrete, domain-separated backend over:
+
+- the session seed,
+- the graph descriptor digest,
+- the encoded node/predecessor-label input.
+
+The default backend shall be:
+
+  blake3-xof
+
+The repository may also provide:
+
+  shake256
+
+or other backends, provided that:
+
+- the backend is declared in the session plan,
+- both prover and verifier use the same backend,
+- parity tests exist where required.
+
+### 12.6 Graph descriptor digest
+
+The graph descriptor shall be encoded in deterministic CBOR and hashed to produce:
+
+  graph_descriptor_digest
+
+This digest must bind:
+
+- graph family ID,
+- `m`,
+- `n`,
+- `γ`,
+- node-ordering version,
+- challenge-set ordering version,
+- hash backend,
+- `w_bits`.
+
+### 12.7 Label equation
+
+Let the active graph be `G` and the ordered predecessor list of node `v` be `(v1, ..., vd)`.
+
+The canonical label semantics are:
+
+- if `v` has no predecessors:
+  `l(v) = h_session(tag_input || encode(v))`
+
+- otherwise:
+  `l(v) = h_session(tag_internal || encode(v) || encode(d) || l(v1) || ... || l(vd))`
+
+The exact byte encoding of `encode(v)` and `encode(d)` must be fixed, documented, and parity-tested.
+
+### 12.8 Challenge-set indexing
+
+The fast phase shall challenge a position `i` in the ordered challenge set, not an ad hoc byte offset.
+
+The response for challenge position `i` is the label `l(oi)`.
+
+This indexing must map deterministically to one physical slot in one leased region.
 
 ---
 
-## 13. Region payload
+## 13. Challenged memory layout
 
-### 13.1 Definition
+### 13.1 Label array
 
-A **region payload** is the exact sequence of bytes written into one challenged region.
+The session label array is:
 
-### 13.2 Composition
+  σ = l(o1) || l(o2) || ... || l(om)
 
-A region payload shall be:
+This is the exact byte sequence that the session claims as covered state.
 
-- one or more serialized PoRep units;
-- followed, only if necessary, by a minimal deterministic tail filler.
+### 13.2 Region slot mapping
 
-### 13.3 Tail filler rule
+For each challenged region:
 
-Tail filler is allowed only to satisfy final alignment or unavoidable packing slack.
+- the verifier computes `slot_count = floor(usable_region_bytes / w_bytes)`;
+- only full slots count toward covered bytes;
+- no slot may straddle a region boundary.
 
-Constraints:
+The global session label count is:
 
-- tail filler must be deterministic and session-bound;
-- tail filler must be derived from:
-  - session nonce,
-  - region identifier,
-  - session plan root;
-- tail filler must be clearly counted separately from real-PoRep bytes;
-- tail filler must be limited to the smaller of:
-  - one outer Merkle leaf,
-  - 1 MiB.
+  m = sum(slot_count over all challenged regions)
 
-The default goal is **zero tail filler**.
+### 13.3 Global ordering
 
-### 13.4 Real-PoRep ratio requirement
+The verifier shall define a canonical global slot order by concatenating the regions in deterministic plan order and, within each region, enumerating slots by increasing offset.
+
+This global slot order must correspond one-to-one with the ordered challenge set `O(G)`.
+
+### 13.4 Slack bytes
+
+Bytes in a challenged region that do not fit a full slot are slack bytes.
+
+Slack bytes:
+
+- must not be counted as covered bytes;
+- must be reported separately;
+- should be zeroized on cleanup;
+- may be deterministically initialized for hygiene, but they are not part of the theorem-level proof.
+
+### 13.5 Coverage metrics
 
 The repository shall report:
 
-- `real_porep_bytes`
-- `tail_filler_bytes`
-- `real_porep_ratio`
+- `covered_bytes`
+- `slack_bytes`
+- `coverage_fraction = covered_bytes / usable_challenged_bytes`
 
-A session may not report “success” unless `real_porep_ratio` meets the profile threshold.  
-Default threshold: **0.99**.
+A session may not report success unless the profile’s coverage threshold is met.
 
----
+Default threshold:
 
-## 14. Outer proof system
+  0.99
 
-### 14.1 Purpose
-
-The outer proof proves timely possession of the bytes committed in the challenged region payload.
-
-### 14.2 Commitment
-
-Each region shall have its own Merkle root over the raw region payload bytes.
-
-The session shall also have a session manifest root covering:
-
-- session parameters;
-- region manifests;
-- region roots;
-- region sizes;
-- payload profile;
-- deadline policy;
-- nonce.
-
-### 14.3 Leaf size
-
-The outer proof leaf size must be configurable.
-
-Recommended defaults:
-
-- correctness / CI: `4 KiB`
-- large-memory benchmarking: `1 MiB`
-
-The leaf size used in a session must be part of the session manifest.
-
-### 14.4 Region challenge sampling
-
-The verifier shall sample leaves independently per region.
-
-The challenge count must be configurable by a statistical policy:
-
-- target minimum missing fraction `epsilon`;
-- target soundness `lambda` bits.
-
-The default challenge policy should compute:
-
-`k = ceil( ln(2^-lambda) / ln(1 - epsilon) )`
-
-and then cap, batch, or range-aggregate challenges only in ways that preserve the documented soundness target.
-
-### 14.5 Batched proofs
-
-To keep challenge traffic practical, the protocol may batch leaves and branches, but batching must not change the semantics of the proof:
-
-- the verifier must still validate membership for each challenged leaf;
-- the timing window must include the batched response.
-
-### 14.6 Deadline enforcement
-
-The verifier must reject if:
-
-- the prover misses the outer challenge deadline;
-- any challenged opening is invalid;
-- the openings are inconsistent with the session manifest.
-
-### 14.7 Rechallenge support
-
-A rechallenge is valid only if:
-
-- the same session manifest root is reused;
-- the verifier clearly labels the run as `rechallenge`;
-- the result artifact distinguishes rechallenge from full rebuild runs.
+The expected value for large profiles should be very close to 1.0 because slack is bounded by less than one slot per region.
 
 ---
 
-## 15. Memory model
+## 14. In-place labelling requirements
 
-## 15.1 Common requirements
+### 14.1 Algorithmic requirement
 
-The repository shall operate only on **user-space accessible memory**.
+The prover’s generation strategy must be faithful to the paper’s in-place property:
 
-All memory accounting must distinguish:
+- aside from the destination label slots and bounded scratch buffers,
+  it must not require a second `O(m)`-sized auxiliary label store.
+
+### 14.2 What counts as extra state
+
+The repository shall distinguish:
+
+- covered state:
+  the session label array occupying challengeable slots;
+
+- algorithmic scratch:
+  working memory needed to generate the label array;
+
+- platform overhead:
+  runtime, allocator, driver, and transport buffers.
+
+Only covered state counts toward covered bytes.
+
+Scratch and platform overhead must be measured and reported separately where practical.
+
+### 14.3 Verifier resource asymmetry
+
+The verifier is allowed to use more memory and time than the prover.
+
+In particular, the verifier may:
+
+- pre-sample the challenge schedule;
+- precompute all expected responses for that schedule;
+- cache expected responses outside the timed path.
+
+The in-place requirement applies to the prover’s session-state generation path, not to the verifier.
+
+### 14.4 Staging rules
+
+A prover may stage labels outside the final challenged regions during initialization only if one of the following happens before the fast phase starts:
+
+- the stage copy is zeroized and released; or
+- the stage copy is counted into the attacker-budget accounting and reflected in claim notes.
+
+Production profiles must not hide surviving stage copies.
+
+### 14.5 HBM materialization rule
+
+If a profile claims HBM coverage, the canonical covered slots for that part of the session must be HBM-resident leased slots.
+
+Host shadows used during initialization must follow the staging rules above.
+
+---
+
+## 15. Deadline calibration and soundness policy
+
+### 15.1 Required profile inputs
+
+Every production profile must define, at minimum:
+
+- `w_bits`
+- graph family ID
+- hash backend
+- challenge rounds `r` or a target soundness bound from which `r` is derived
+- per-round deadline `Δ`
+- adversary model:
+  `general` or `graph_restricted`
+- attacker-budget assumption `M_bits` or `M_bytes`
+- coverage threshold
+- transport mode for the fast phase
+
+Profiles may additionally define a prover sandbox policy for development-only
+execution. If present, that policy must specify:
+
+- that the mode is `process_budget_dev`;
+- any process-local cap used for the prover child;
+- whether GPU visibility must be suppressed; and
+- any additional `prlimit`-style hardening such as `memlock` or file-size
+  limits.
+
+Production profiles must not rely on such a policy to define theorem-level `M`.
+
+### 15.2 Calibrated `q`
+
+The verifier shall derive a conservative `q` for the active profile.
+
+`q` must upper-bound the amount of local recomputation work available inside one fast round under the chosen deadline.
+
+At minimum, the calibration must include:
+
+- fastest measured local hash-evaluation throughput on the active backend;
+- transport and serialization overhead;
+- resident lookup latency for a stored label;
+- a safety margin.
+
+If a conservative `q` cannot be derived, the profile is invalid.
+
+### 15.3 Required inequality
+
+A production profile is invalid unless:
+
+  q < γ
+
+This must be checked and recorded in the result artifact.
+
+### 15.4 Round selection
+
+If `r` is not fixed directly by the profile, the verifier shall choose the smallest `r` such that the reported soundness bound is at most the profile’s target bound.
+
+If the chosen adversary model yields:
+
+- `w0 <= 0`, or
+- `M' / m >= 1`, or
+- an additive `2^(-w0)` term that already exceeds the target bound,
+
+then the profile must fail validation rather than report a misleading success probability.
+
+### 15.5 Challenge distribution
+
+Each fast round must challenge one independently sampled position uniformly from `[0, m)`.
+
+Sampling is with replacement.
+
+Repeated challenges are allowed.
+
+Per-region quota schedules may be used only in diagnostic modes unless separately analysed and explicitly marked as non-theorem-preserving.
+
+### 15.6 Calibration artifacts
+
+The benchmark harness shall persist calibration evidence for each production profile, including:
+
+- resident lookup latency distribution;
+- fastest local hash throughput;
+- derived `q`;
+- `γ`;
+- `q/γ` margin;
+- any measured alternate-store copy timings used to justify operational region claims.
+
+---
+
+## 16. Memory model
+
+### 16.1 Common requirements
+
+The repository shall operate only on user-space accessible memory.
+
+All accounting must distinguish:
 
 - total detected capacity,
 - reserved bytes,
-- usable bytes,
-- covered bytes.
+- usable challenged bytes,
+- covered bytes,
+- slack bytes,
+- declared attacker-budget bytes.
 
-### 15.2 Host memory backend
+### 16.2 Host memory backend
 
 The host backend shall support:
 
@@ -678,9 +1005,9 @@ The host backend shall support:
 - NUMA affinity controls where practical;
 - explicit zeroization on teardown.
 
-The verifier creates the host region and pass a lease handle to the prover.
+The verifier creates the host region and passes a lease handle to the prover.
 
-### 15.3 GPU HBM backend
+### 16.3 GPU HBM backend
 
 The HBM backend shall support:
 
@@ -690,9 +1017,9 @@ The HBM backend shall support:
 - explicit zeroization on teardown where supported;
 - per-device accounting.
 
-The prover must write the PoRep region payload into the leased HBM allocation itself. A host-only copy does not satisfy HBM coverage.
+A profile that claims HBM coverage must account for any host-side shadow copies under the staging rules.
 
-### 15.4 Region planner
+### 16.4 Region planner
 
 The planner shall maximize fill subject to reserve policy.
 
@@ -701,150 +1028,196 @@ Inputs:
 - available host bytes;
 - per-GPU available HBM bytes;
 - guard/reserve bytes;
-- PoRep unit profile;
+- `w_bits`;
+- graph family;
 - target fill ratio;
-- supported sector sizes;
-- measured artifact footprints.
+- adversary model;
+- attacker budget;
+- supported backends.
 
 Outputs:
 
 - region plan;
-- PoRep unit packing plan;
-- expected real-PoRep ratio;
-- expected slack.
+- per-region slot counts;
+- global `m`;
+- graph parameter `n`;
+- `γ`;
+- expected slack;
+- expected coverage fraction;
+- claim notes if unchallenged tiers materially affect `M`.
 
-### 15.5 Artifact footprint accounting
+### 16.5 Attacker-budget accounting across tiers
 
-The planner must use **measured** unit footprints, not only nominal sector size.
+The planner must account for all local tiers that remain usable to the attacker during the fast phase.
 
-A unit’s in-memory footprint may include:
+For example:
 
-- sealed replica;
-- proof bytes;
-- metadata;
-- included cache artifacts.
+- a host-only session on a machine with large free HBM must either:
+  - include that HBM in `M`, or
+  - explicitly constrain it by a separate documented mechanism;
+
+- an HBM-only session on a machine with large free DRAM must either:
+  - include that DRAM in `M`, or
+  - explicitly constrain it by a separate documented mechanism.
+
+This accounting is mandatory for theorem-level honesty.
 
 ---
 
-## 16. Prover/verifier protocol
+## 17. Prover/verifier protocol
 
-### 16.1 Transport
+### 17.1 Transport
 
-The default transport shall be gRPC over:
+The repository shall separate:
 
-- Unix domain sockets for same-host runs; or
-- loopback TCP if Unix sockets are unavailable.
+- control plane:
+  default gRPC over Unix domain sockets, or loopback TCP if Unix sockets are unavailable;
 
-The protocol must be versioned.
+- fast phase:
+  a low-overhead timed challenge channel.
 
-### 16.2 Message flow
+The fast phase may use gRPC only if the profile’s calibration includes the resulting jitter and still establishes a valid `q < γ`.
+
+A lower-overhead IPC transport is preferred for production fast rounds.
+
+### 17.2 Normative message flow
 
 The normative message flow is:
 
 1. `Discover`
 2. `PlanSession`
 3. `LeaseRegions`
-4. `GenerateInnerPoRep`
-5. `MaterializeRegionPayloads`
-6. `CommitRegions`
-7. `VerifyInnerProofs`
-8. `ChallengeOuter`
-9. `VerifyOuter`
-10. `Finalize`
-11. `Cleanup`
+4. `SeedSession`
+5. `MaterializeLabels`
+6. `PrepareFastPhase`
+7. `RunFastPhase`
+8. `Finalize`
+9. `Cleanup`
 
-### 16.3 PlanSession
+### 17.3 PlanSession
 
-The verifier creates a session plan containing:
+The verifier creates a session plan containing at minimum:
 
-- session id;
-- nonce;
+- session ID;
+- session seed;
+- graph family ID;
+- graph parameter `n`;
+- `m`;
+- `γ`;
+- `w_bits`;
+- graph descriptor digest;
+- hash backend;
 - region plan;
-- PoRep unit profile;
-- sector plan;
-- leaf size;
-- challenge policy;
-- deadlines;
+- deadline policy;
+- derived `q`;
+- challenge-round count `r`;
+- adversary model;
+- attacker-budget assumption;
 - cleanup policy.
 
-### 16.4 LeaseRegions
+### 17.4 LeaseRegions
 
-The verifier sends lease handles for each region.
+The verifier sends lease handles for each challenged region.
 
 Each lease must include:
 
-- region id;
+- region ID;
 - region type (`host` or `gpu`);
 - usable bytes;
+- slot count;
+- slack bytes;
 - lease handle;
 - lease expiry;
 - cleanup policy.
 
-### 16.5 GenerateInnerPoRep
+### 17.5 SeedSession
 
-The prover generates real Filecoin PoRep units using the vendored bridge.
+The verifier sends the session seed and graph/session parameters to the prover.
 
-The prover must record per-unit and per-phase timings.
+The prover must treat these as the only inputs for the covered label state, aside from the deterministic graph and hash semantics.
 
-### 16.6 MaterializeRegionPayloads
+### 17.6 MaterializeLabels
 
 The prover:
 
-- serializes PoRep units canonically;
-- packs them into the target region;
-- writes the region payload into the leased allocation;
-- computes the region Merkle root over those bytes;
-- returns region manifests and region roots.
+- constructs the active graph implicitly;
+- computes the labels for the ordered challenge set `O(G)`;
+- writes each label into its assigned slot in the leased regions;
+- clears any stage copies or declares them for attacker-budget accounting;
+- returns generation metadata and timings.
 
-### 16.7 VerifyInnerProofs
+The metadata must include:
 
-The verifier verifies all required inner proofs before accepting the region payload commitments.
+- graph descriptor digest;
+- per-region covered bytes;
+- per-region slack bytes;
+- any declared stage-copy bytes remaining before fast phase.
 
-If inner verification fails, the session fails immediately.
+### 17.7 PrepareFastPhase
 
-### 16.8 ChallengeOuter
+Before the fast phase starts:
 
-The verifier sends random per-region leaf challenges.
+- the verifier may sample the entire challenge schedule;
+- the verifier may precompute all expected response labels for that schedule;
+- the verifier must keep undisclosed future challenges hidden from the prover;
+- the prover must not retain undeclared stage copies.
 
-The prover responds with:
+### 17.8 RunFastPhase
 
-- challenged leaf bytes;
-- Merkle authentication paths;
-- response timing metadata.
+For each of `r` rounds:
 
-### 16.9 Finalize
+- the verifier chooses or reveals one challenge index `i`;
+- the verifier starts its round timer immediately before challenge emission;
+- the prover returns the bytes in slot `i`;
+- the verifier records arrival time and verifies the returned label;
+- the round fails if the response is wrong or late.
 
-The verifier computes the final verdict and writes the canonical result artifact.
+The timed path must include challenge transmission, prover lookup, any necessary host/HBM read, and response transmission.
 
-### 16.10 Cleanup
+A production acceptance verdict requires all rounds to succeed.
 
-The cleanup phase shall:
+The verifier may continue after a failure only in diagnostic mode; the verdict remains failure.
+
+### 17.9 Finalize
+
+The verifier computes:
+
+- the final verdict;
+- the soundness bound for the declared adversary model;
+- covered-byte and slack-byte metrics;
+- any claim notes about unchallenged local tiers or declared stage copies.
+
+It then writes the canonical result artifact.
+
+### 17.10 Cleanup
+
+Cleanup shall:
 
 - zero challenged regions according to policy;
-- drop leases;
-- release handles;
-- write cleanup status into the result artifact.
+- zero slack bytes where practical;
+- release leases and handles;
+- record cleanup status in the result artifact.
 
-Cleanup failure must be reported even if the proof succeeded.
+Cleanup failure must be reported even if the fast phase succeeded.
 
 ---
 
-## 17. Session result and verdicts
+## 18. Session result and verdicts
 
-### 17.1 Allowed verdicts
+### 18.1 Allowed verdicts
 
 A session verdict must be one of:
 
 - `SUCCESS`
-- `INNER_PROOF_INVALID`
-- `OUTER_PROOF_INVALID`
-- `TIMEOUT`
+- `WRONG_RESPONSE`
+- `DEADLINE_MISS`
+- `CALIBRATION_INVALID`
 - `COVERAGE_BELOW_THRESHOLD`
 - `RESOURCE_FAILURE`
 - `CLEANUP_FAILURE`
 - `PROTOCOL_ERROR`
 
-### 17.2 Required output fields
+### 18.2 Required output fields
 
 Every verifier run must emit, at minimum:
 
@@ -852,164 +1225,197 @@ Every verifier run must emit, at minimum:
 - `verdict`
 - `session_id`
 - `profile_name`
+- `graph_family`
+- `graph_parameter_n`
+- `graph_descriptor_digest`
+- `label_width_bits`
+- `label_count_m`
+- `gamma`
+- `hash_backend`
+- `session_seed_hex` or a reproducible commitment to it
+- `adversary_model`
+- `attacker_budget_bytes_assumed`
+- `target_success_bound`
+- `reported_success_bound`
+- `soundness_model`
+- `deadline_us`
+- `q_bound`
+- `rounds_r`
+- `accepted_rounds`
 - `host_total_bytes`
 - `host_usable_bytes`
 - `host_covered_bytes`
 - `gpu_devices`
 - `gpu_usable_bytes_by_device`
 - `gpu_covered_bytes_by_device`
-- `real_porep_bytes`
-- `tail_filler_bytes`
-- `real_porep_ratio`
+- `covered_bytes`
+- `slack_bytes`
 - `coverage_fraction`
-- `inner_filecoin_verified`
-- `outer_pose_verified`
-- `challenge_leaf_size`
-- `challenge_count`
-- `deadline_ms`
-- `response_ms`
+- `max_round_trip_us`
 - `cleanup_status`
-- `timings_ms`
+- `claim_notes`
+- `timings_us` or `timings_ms`
 - `environment`
 
-### 17.3 Timing breakdown
+If a development-only prover sandbox policy affected `M`, the result artifact
+must make that explicit in `claim_notes` or equivalent structured fields,
+including at minimum:
 
-`timings_ms` must include:
+- sandbox mode identifier;
+- statement that the attacker budget was lowered for development only;
+- configured development attacker-budget value;
+- configured process-local memory cap, if any; and
+- whether GPUs were explicitly hidden from the prover.
+
+### 18.3 Timing breakdown
+
+The timing breakdown must include at least:
 
 - `discover`
 - `region_leasing`
 - `allocation`
-- `data_generation`
-- `seal_pre_commit_phase1`
-- `seal_pre_commit_phase2`
-- `seal_commit_phase1`
-- `seal_commit_phase2`
-- `object_serialization`
+- `graph_construction`
+- `challenge_schedule_prep`
+- `expected_response_prep`
+- `label_generation`
 - `copy_to_host`
 - `copy_to_hbm`
-- `outer_tree_build`
-- `inner_verify`
-- `challenge_response`
-- `outer_verify`
+- `stage_buffer_cleanup`
+- `fast_phase_total`
+- `verifier_check_total`
 - `cleanup`
 - `total`
 
-### 17.4 Result artifact example
+The fast-phase report should also include at least:
 
-```json
+- `round_trip_p50`
+- `round_trip_p95`
+- `round_trip_p99`
+- `round_trip_max`
+
+### 18.4 Result artifact example
+
 {
   "success": true,
   "verdict": "SUCCESS",
   "session_id": "2026-03-20T12:00:00Z-8e2d7d2a",
-  "profile_name": "single-h100-hybrid-max",
-  "host_total_bytes": 1030792151040,
-  "host_usable_bytes": 515396075520,
-  "host_covered_bytes": 510027366400,
-  "gpu_devices": [0],
-  "gpu_usable_bytes_by_device": {"0": 79691776000},
-  "gpu_covered_bytes_by_device": {"0": 78926315520},
-  "real_porep_bytes": 588953681920,
-  "tail_filler_bytes": 1048576,
-  "real_porep_ratio": 0.9999982,
-  "coverage_fraction": 0.9892,
-  "inner_filecoin_verified": true,
-  "outer_pose_verified": true,
-  "challenge_leaf_size": 1048576,
-  "challenge_count": 768,
-  "deadline_ms": 2200,
-  "response_ms": 731,
+  "profile_name": "dev-small",
+  "graph_family": "pose-db-drg-v1",
+  "graph_parameter_n": 20,
+  "graph_descriptor_digest": "sha256:6a8c4d7d2d6e9c4b...",
+  "label_width_bits": 256,
+  "label_count_m": 4194304,
+  "gamma": 1048576,
+  "hash_backend": "blake3-xof",
+  "session_seed_hex": "9b0d7a7f...",
+  "adversary_model": "general",
+  "attacker_budget_bytes_assumed": 33554432,
+  "target_success_bound": 1e-9,
+  "reported_success_bound": 6.1e-11,
+  "soundness_model": "random-oracle + distant-attacker + calibrated q<gamma",
+  "deadline_us": 2500,
+  "q_bound": 4096,
+  "rounds_r": 128,
+  "accepted_rounds": 128,
+  "host_total_bytes": 17179869184,
+  "host_usable_bytes": 1073741824,
+  "host_covered_bytes": 1073741824,
+  "gpu_devices": [],
+  "gpu_usable_bytes_by_device": {},
+  "gpu_covered_bytes_by_device": {},
+  "covered_bytes": 1073741824,
+  "slack_bytes": 0,
+  "coverage_fraction": 1.0,
+  "max_round_trip_us": 611,
   "cleanup_status": "ZEROIZED_AND_RELEASED",
+  "claim_notes": [
+    "formal claim is about local storage under the configured attacker budget",
+    "no surviving stage buffers declared before fast phase"
+  ],
   "timings_ms": {
-    "discover": 11,
-    "region_leasing": 34,
-    "allocation": 118,
-    "data_generation": 43,
-    "seal_pre_commit_phase1": 12984,
-    "seal_pre_commit_phase2": 6321,
-    "seal_commit_phase1": 14021,
-    "seal_commit_phase2": 9211,
-    "object_serialization": 1880,
-    "copy_to_host": 940,
-    "copy_to_hbm": 1710,
-    "outer_tree_build": 6033,
-    "inner_verify": 818,
-    "challenge_response": 731,
-    "outer_verify": 202,
-    "cleanup": 141,
-    "total": 53458
+    "discover": 3,
+    "region_leasing": 11,
+    "allocation": 16,
+    "graph_construction": 28,
+    "challenge_schedule_prep": 2,
+    "expected_response_prep": 104,
+    "label_generation": 863,
+    "copy_to_host": 0,
+    "copy_to_hbm": 0,
+    "stage_buffer_cleanup": 2,
+    "fast_phase_total": 74,
+    "verifier_check_total": 8,
+    "cleanup": 12,
+    "total": 1123
   },
   "environment": {
     "python_version": "3.x",
-    "rust_toolchain": "pinned",
-    "cuda_runtime": "captured",
-    "driver_version": "captured",
-    "upstream_commit": "captured"
+    "native_accel": ["rust"],
+    "cuda_runtime": null,
+    "driver_version": null
   }
 }
-```
 
 ---
 
-## 18. CLI requirements
+## 19. CLI requirements
 
-### 18.1 Commands
+### 19.1 Commands
 
-The CLI shall expose three top-level personas.
+The CLI shall expose the following top-level personas.
 
-#### Prover
+Prover:
+  pose prover serve --config prover.toml
+  pose prover inspect
+  pose prover self-test
 
-```bash
-pose prover serve --config prover.toml
-pose prover inspect
-pose prover self-test
-```
+Verifier:
+  pose verifier run --profile single-h100-hybrid-max
+  pose verifier run --plan plan.yaml --json
+  pose verifier rechallenge --session-id <id>
+  pose verifier verify-record result.json
+  pose verifier calibrate --profile single-h100-hbm-max
 
-#### Verifier
+Benchmark:
+  pose bench run --profile single-h100-hbm-max
+  pose bench matrix --profiles bench_profiles/
+  pose bench summarize results/*.json
 
-```bash
-pose verifier run --profile single-h100-hybrid-max
-pose verifier run --plan plan.yaml --json
-pose verifier rechallenge --session-id <id>
-pose verifier verify-record result.json
-```
+Optional developer utility:
+  pose graph inspect --m 1048576 --json
 
-#### Benchmark
-
-```bash
-pose bench run --profile single-h100-hbm-max
-pose bench matrix --profiles bench_profiles/
-pose bench summarize results/*.json
-```
-
-### 18.2 Exit codes
+### 19.2 Exit codes
 
 The CLI must use stable exit codes:
 
-- `0` success;
+- `0` for success;
 - nonzero for all failures.
 
 The human-readable summary must never be the only output path; JSON must always be available.
 
-### 18.3 Human-readable summary
+### 19.3 Human-readable summary
 
 The human summary must include:
 
 - session verdict;
-- host and GPU covered bytes;
-- fill ratio;
-- real-PoRep ratio;
+- covered bytes and slack bytes by tier;
+- `m`, `γ`, `r`, `Δ`, and `q`;
+- attacker-budget assumption;
+- adversary model;
+- reported success bound;
 - total runtime;
-- challenge response time;
-- inner verify status;
-- outer verify status.
+- fast-phase timing summary;
+- cleanup status.
+
+It must not overstate the claim scope.
 
 ---
 
-## 19. Test suite
+## 20. Test suite
 
 The test suite is mandatory and central to repository credibility.
 
-### 19.1 Test categories
+### 20.1 Test categories
 
 The repository shall contain:
 
@@ -1021,68 +1427,53 @@ The repository shall contain:
 - `hardware`
 - `performance`
 
-### 19.2 Upstream integrity tests
+### 20.2 Paper-conformance tests
 
-These tests prove that the repository still uses the real upstream implementation.
+These tests prove that the repository still implements the intended protocol.
 
 Required checks:
 
-- `vendor/UPSTREAM.lock` matches the vendored tree;
-- production code does not reference banned shortcut APIs;
-- the vendored Rust workspace passes its own test suite in CI;
-- upstream patch status is clean or explicitly acknowledged.
+- the bundled paper exists at the documented path;
+- the graph family ID and arbitrary-`m` factory produce the expected `m` and `γ`;
+- the challenge distribution is uniform over the global challenge set;
+- the soundness calculator matches the equations used by the bundled paper;
+- production code does not enable banned shortcut paths.
 
-### 19.3 Parity tests: Python mirror vs Rust reference
+### 20.3 Parity tests: Python reference vs native accelerators
 
-Parity tests must compare Python outputs against the vendored Rust reference for deterministic components, including:
+Parity tests must compare native outputs against the Python reference for:
 
-- replica-id derivation;
-- DRG parent generation;
-- expander parent generation;
-- label-related checkpoints where exposed;
-- `comm_d`;
-- `comm_r`;
-- `tree_c` root where exposed;
-- `tree_r_last` root where exposed;
-- manifest serialization;
-- region payload root.
+- graph descriptor encoding;
+- node ordering;
+- predecessor ordering;
+- challenge-set ordering;
+- label derivation for fixed seeds and backends;
+- region slot mapping;
+- expected response generation.
 
-The expected result is either:
+The expected result is bit-for-bit equality.
 
-- bit-for-bit equality; or
-- explicitly documented semantic equivalence for proof artifacts where bytes may differ but verification semantics are identical.
-
-### 19.4 Inner proof correctness tests
+### 20.4 Graph property tests
 
 Required cases:
 
-- small CI sectors;
-- multiple supported sector shapes in nightly;
-- lab-only large-sector runs on H100 hardware.
+- exhaustive depth-robustness checks for small graphs;
+- exhaustive arbitrary-`m` construction checks for small `m`;
+- small-`n` in-place-labelling checks;
+- large-case structural invariant checks for implicit graph construction.
 
-Tests must cover:
-
-- successful seal + verify;
-- tampered `comm_d` failure;
-- tampered `comm_r` failure;
-- wrong prover id failure;
-- wrong sector id failure;
-- wrong randomness failure;
-- wrong proof bytes failure.
-
-### 19.5 Outer proof correctness tests
+### 20.5 Label-correctness tests
 
 Required cases:
 
-- valid region root and openings;
-- tamper one byte -> reject;
-- wrong leaf index -> reject;
-- wrong branch -> reject;
-- wrong region id -> reject;
-- stale session nonce -> reject;
-- stale manifest root -> reject.
+- correct seed and graph descriptor produce accepted labels;
+- wrong seed fails;
+- wrong hash backend fails;
+- wrong predecessor ordering fails;
+- wrong node-ordering version fails;
+- stale session seed replay fails.
 
-### 19.6 Protocol tests
+### 20.6 Protocol tests
 
 Required cases:
 
@@ -1090,33 +1481,34 @@ Required cases:
 - malformed message handling;
 - timeout handling;
 - duplicate challenge handling;
-- repeated session id rejection;
+- repeated session ID rejection;
+- fast-phase transport fallback reporting;
 - verifier/prover restart recovery where applicable.
 
-### 19.7 Separation tests
+### 20.7 In-place and staging tests
 
-Required invariants:
+Required cases:
 
-- verifier package has no imports from prover-only modules;
-- prover package has no verifier-policy logic;
-- bridge interface is narrow and stable;
-- result schema round-trips cleanly.
+- prover generation path does not allocate a second `O(m)` label store;
+- stage buffers are cleared before the fast phase or correctly declared;
+- HBM materialization paths do not silently leave host shadows in production mode.
 
-### 19.8 Adversarial tests
+### 20.8 Adversarial tests
 
 The adversarial suite must explicitly test:
 
-- old valid inner proof replayed under a new session nonce;
-- correct inner proof with incorrect outer bytes;
-- object stored only on disk or non-challenged memory;
-- partial overwrite of a leased region;
-- HBM region not actually filled;
-- host region with sparse writes;
+- partial label storage with on-demand recomputation;
+- stale label replay under a new seed;
+- challenge answers served from the wrong slot;
+- hidden host shadow during HBM profile;
+- hidden HBM shadow during host profile;
+- sparse writes to a challenged region;
+- timeout caused by post-challenge recomputation;
 - timeout caused by post-challenge copy-in;
-- insufficient coverage despite valid proof bytes elsewhere;
-- mismatch between declared and actual payload length.
+- incorrect `q` calibration causing profile invalidation;
+- mismatch between declared and actual attacker-budget accounting.
 
-### 19.9 Hardware tests
+### 20.9 Hardware tests
 
 Self-hosted or lab hardware jobs must include:
 
@@ -1130,28 +1522,28 @@ Every hardware job must archive:
 
 - result JSON;
 - benchmark logs;
+- calibration artifacts;
 - environment snapshot;
-- upstream commit;
-- Rust toolchain version;
-- CUDA runtime/driver versions;
+- native-acceleration versions;
+- CUDA runtime and driver versions;
 - GPU inventory.
 
-### 19.10 Performance regression tests
+### 20.10 Performance regression tests
 
 Nightly performance tests must detect regressions in:
 
-- inner proof timings;
-- region payload construction;
+- label-generation time;
 - HBM transfer time;
-- outer tree build time;
-- challenge response time;
-- overall coverage fraction.
+- fast-phase latency;
+- `q` margin;
+- coverage fraction;
+- total runtime.
 
 ---
 
-## 20. Benchmarking
+## 21. Benchmarking
 
-### 20.1 Benchmark classes
+### 21.1 Benchmark classes
 
 The benchmark harness shall support:
 
@@ -1161,11 +1553,16 @@ The benchmark harness shall support:
 
 Definitions:
 
-- **cold**: includes first-run setup costs;
-- **warm**: repeated steady-state runs;
-- **rechallenge**: no rematerialization, only re-openings on resident payloads.
+- `cold`:
+  includes first-run setup costs and calibration-relevant initialization;
 
-### 20.2 Required benchmark profiles
+- `warm`:
+  repeated full runs with steady-state caches and warmed runtime;
+
+- `rechallenge`:
+  no relabelling or rematerialization, only new fast rounds against resident labels.
+
+### 21.2 Required benchmark profiles
 
 The repository must include these named profiles:
 
@@ -1176,7 +1573,7 @@ The repository must include these named profiles:
 - `eight-h100-hbm-max`
 - `eight-h100-hybrid-max`
 
-### 20.3 Benchmark profile fields
+### 21.3 Benchmark profile fields
 
 Each profile must define, at minimum:
 
@@ -1184,14 +1581,18 @@ Each profile must define, at minimum:
 - reserve policy;
 - host target fraction;
 - per-GPU target fraction;
-- PoRep unit profile;
-- leaf size;
-- challenge policy;
+- `w_bits`;
+- graph family;
+- hash backend;
+- adversary model;
+- attacker-budget assumption;
+- target success bound or fixed `r`;
 - deadline policy;
+- `q` calibration policy;
 - cleanup policy;
 - repetition count.
 
-### 20.4 Reported benchmark metrics
+### 21.4 Reported benchmark metrics
 
 Every benchmark summary must report:
 
@@ -1199,53 +1600,60 @@ Every benchmark summary must report:
 - mean / p50 / p95 / p99 timings;
 - deadline miss rate;
 - coverage fraction;
-- real-PoRep ratio;
+- slack bytes;
+- `q` and `γ`;
+- attacker-budget assumption;
+- reported success bound;
 - per-device HBM coverage;
 - verifier CPU time;
 - rechallenge performance.
 
 ---
 
-## 21. Build and packaging
+## 22. Build and packaging
 
-### 21.1 Python packaging
+### 22.1 Python packaging
 
 Use a standard Python package layout with pinned dependencies.
 
-### 21.2 Rust packaging
+### 22.2 Native packaging
 
-Use a workspace or independent crate arrangement that makes the bridge reproducible.
+Use a workspace or crate arrangement that makes native acceleration reproducible.
 
-### 21.3 Python/Rust integration
+### 22.3 Python/native integration
 
-The preferred integration mechanism is `pyo3` + `maturin`.
+The preferred integration mechanism is:
 
-### 21.4 Reproducibility
+  pyo3 + maturin
+
+CUDA modules may be built separately but must integrate into the same parity and CI story.
+
+### 22.4 Reproducibility
 
 The repository must have:
 
 - pinned Python dependencies;
-- a Cargo lockfile;
+- a Cargo lockfile if Rust is used;
 - reproducible local build instructions;
 - a single-command test path;
+- a single-command calibration path;
 - a single-command benchmark path.
 
-### 21.5 Required developer commands
+### 22.5 Required developer commands
 
 At minimum:
 
-```bash
-make sync-upstream
-make build
-make test
-make test-parity
-make test-hardware
-make bench PROFILE=single-h100-hbm-max
-```
+  make build
+  make test
+  make test-parity
+  make test-graphs
+  make test-hardware
+  make calibrate PROFILE=single-h100-hbm-max
+  make bench PROFILE=single-h100-hbm-max
 
 ---
 
-## 22. Documentation requirements
+## 23. Documentation requirements
 
 The repository must ship the following documents:
 
@@ -1253,62 +1661,71 @@ The repository must ship the following documents:
 - `docs/architecture.md`
 - `docs/threat-model.md`
 - `docs/protocol.md`
+- `docs/graph-construction.md`
+- `docs/security-model.md`
 - `docs/benchmarking.md`
-- `docs/upstream-sync.md`
 - `docs/result-schema.md`
+- `docs/references/software-based-memory-erasure-relaxed-isolation.pdf`
 
-Each document must be consistent with this spec.  
-If a document disagrees with this file, this file wins.
+Each document must be consistent with this spec.
+
+If an engineering document disagrees with this file, this file wins.
+
+If a theorem statement or formal definition is quoted or paraphrased here and there is a conflict with the bundled paper, the bundled paper wins unless this spec explicitly states that it is imposing a narrower implementation requirement.
 
 ---
 
-## 23. Milestones
+## 24. Milestones
 
-### 23.1 Phase 0 — foundation
+### 24.1 Phase 0 — foundation
 
 Deliverables:
 
-- vendored upstream workspace;
-- Rust bridge skeleton;
-- basic Python package structure;
-- upstream integrity CI;
+- bundled paper in the repository;
+- Python reference graph factory;
+- Python reference labeler;
+- session and result schemas;
+- basic prover/verifier skeleton;
 - parity harness scaffolding.
 
 Exit criteria:
 
-- upstream tests run in CI;
-- bridge can execute one real seal + verify flow.
+- small reference sessions run end-to-end;
+- graph descriptor and label vectors are deterministic;
+- soundness calculator matches the chosen formulas.
 
-### 23.2 Phase 1 — host-memory PoSE
+### 24.2 Phase 1 — host-memory PoSE-DB
 
 Deliverables:
 
-- local-leased host memory regions;
-- canonical PoRep unit serialization;
-- outer host-region proof;
+- verifier-leased host memory regions;
+- canonical slot mapping and label-array layout;
+- host-only fast phase;
 - verifier result artifact;
 - host-only CLI flow.
 
 Exit criteria:
 
-- successful host-only PoSE on development hardware;
-- adversarial host-memory tests passing.
+- successful host-only PoSE-DB on development hardware;
+- adversarial host-memory tests passing;
+- calibrated profile with valid `q < γ`.
 
-### 23.3 Phase 2 — single-H100 HBM PoSE
+### 24.3 Phase 2 — single-H100 HBM PoSE-DB
 
 Deliverables:
 
 - HBM leasing via CUDA IPC;
 - HBM materialization path;
-- HBM outer proof;
-- single-H100 benchmark profiles.
+- HBM fast phase;
+- single-H100 HBM benchmark profiles.
 
 Exit criteria:
 
-- successful HBM-only PoSE on one H100;
-- HBM challenge response benchmarks archived.
+- successful HBM session on one H100;
+- HBM calibration artifacts archived;
+- any host-shadow caveats reported honestly.
 
-### 23.4 Phase 3 — hybrid host + HBM
+### 24.4 Phase 3 — hybrid host + HBM
 
 Deliverables:
 
@@ -1319,9 +1736,10 @@ Deliverables:
 
 Exit criteria:
 
-- successful hybrid session on one H100 box.
+- successful hybrid session on one H100 box;
+- attacker-budget accounting across both tiers validated.
 
-### 23.5 Phase 4 — 8×H100 scale-out
+### 24.5 Phase 4 — 8×H100 scale-out
 
 Deliverables:
 
@@ -1332,89 +1750,93 @@ Deliverables:
 
 Exit criteria:
 
-- successful 8×H100 HBM-only and hybrid sessions.
+- successful 8×H100 HBM-only and hybrid sessions;
+- archived calibration and result artifacts.
 
-### 23.6 Phase 5 — Python port promotion
+### 24.6 Phase 5 — accelerator promotion
 
 Deliverables:
 
-- deterministic Python mirror parity closure;
-- formal promotion process for selected components.
+- native host and GPU labelers;
+- parity closure against the Python reference;
+- formal promotion process for selected accelerated components.
 
 Exit criteria:
 
-- promoted Python components have parity reports and no regression in security claims.
+- promoted components have parity reports;
+- no regression in reported claim scope or soundness accounting.
 
 ---
 
-## 24. Acceptance criteria
+## 25. Acceptance criteria
 
 The repository shall not be considered complete until all of the following are true:
 
-1. A verifier can run a successful end-to-end PoSE against host memory.
-2. A verifier can run a successful end-to-end PoSE against HBM on a single H100.
+1. A verifier can run a successful end-to-end host-memory PoSE-DB session.
+2. A verifier can run a successful end-to-end HBM session on a single H100.
 3. The same protocol scales to an 8×H100 box.
-4. Every successful session includes at least one real Filecoin proof accepted by the official verification path.
-5. Production mode contains no shortcut or fake Filecoin proof path.
-6. Deterministic Python mirrors pass parity tests against vendored Rust.
-7. CLI output includes success/failure and per-phase timings.
+4. Every successful session uses the bundled paper’s graph-based protocol or a formally equivalent implementation allowed by this spec.
+5. Production profiles demonstrate and record a valid `q < γ`.
+6. Native accelerators pass parity tests against the Python reference.
+7. CLI output includes verdict, coverage, attacker-budget assumptions, soundness model, and timings.
 8. Benchmark profiles exist and produce machine-readable artifacts.
-9. The default benchmark profiles maximize challenged user-space memory subject to reserve policy.
-10. The repository reports coverage and real-PoRep ratio honestly and separately.
+9. Default profiles maximize challenged user-space memory subject to reserve policy and honest attacker-budget accounting across unchallenged local tiers.
+10. Production mode contains no silent downgrades, hidden stage copies, or undeclared shortcut paths.
 
 ---
 
-## 25. Design invariants
+## 26. Design invariants
 
 The following invariants must remain true unless this spec is revised:
 
-1. **Real Filecoin first.**  
-   The inner proof path is the actual upstream Filecoin implementation until formally replaced.
+1. Paper-faithful protocol first.
+   The production protocol is the graph-based PoSE-DB protocol described by the bundled paper.
 
-2. **Two-proof model.**  
-   PoSE is the conjunction of inner Filecoin verification and outer timed storage verification.
+2. One seeded labelling phase plus timed single-label rounds.
+   The protocol is not split into separate proof layers.
 
-3. **Verifier/prover separation.**  
+3. Verifier/prover separation.
    The verifier remains a distinct process with distinct responsibilities.
 
-4. **No silent downgrades.**  
-   Production mode must never silently fall back to fake proofs, synthetic proofs, managed memory, or weaker protocol modes.
+4. No silent downgrades.
+   Production mode must never silently fall back to untimed verification, managed memory, hidden stage copies, or weaker claim scopes.
 
-5. **Coverage honesty.**  
-   All reported memory coverage must reflect actual challenged user-space bytes, not nominal hardware capacity.
+5. Coverage honesty.
+   All reported coverage must reflect actual challengeable slots in leased user-space regions.
 
-6. **Parity before promotion.**  
-   No Python Filecoin component may replace the reference path without passing parity gates.
+6. Attacker-budget honesty.
+   All unchallenged local memory usable during the fast phase counts toward the reported attacker budget unless separately constrained and documented.
+
+7. Reference before acceleration.
+   No accelerated component may replace the reference path without parity gates.
 
 ---
 
-## 26. Open implementation notes
+## 27. Open implementation notes
 
 This section is informative.
 
-- The initial repository should optimize for clarity and evidence, not micro-optimizations.
-- The strongest first implementation target is `local-leased` same-host benchmarking on one H100.
-- The fastest path to credibility is:
-  1. vendor upstream,
-  2. bridge official seal/verify,
-  3. build the outer leased-region protocol,
-  4. prove host-only first,
-  5. then HBM,
-  6. then 8×H100.
+- The initial implementation should optimize for clarity and claim discipline before micro-optimization.
+- The strongest theorem-level claims will come from profiles that challenge as much relevant local memory as possible across all local tiers available to the attacker.
+- Because fast rounds are timing-sensitive, same-host profiles should prefer a low-jitter IPC transport for the fast phase.
 - The benchmark harness should preserve enough metadata that performance history is scientifically useful rather than anecdotal.
+- Small exhaustive graph checks are far more valuable than large unverified graph dumps.
+- Implicit graph generation is not an optimization detail; for realistic `m`, it is part of making the protocol implementable.
 
 ---
 
-## 27. Summary
+## 28. Summary
 
-The repository shall be a Python-first PoSE system with:
+The repository shall be a Python-first PoSE-DB system with:
 
-- a real vendored Filecoin PoRep core,
+- the bundled depth-robust-graph protocol as its normative core,
 - a clean prover/verifier process split,
-- leased-region host and HBM challenges,
-- a canonical serialized PoRep object,
-- a timed outer proof of storage,
-- strong benchmark and parity infrastructure,
-- and an explicit path from single-H100 to 8×H100 deployment.
+- verifier-leased host and HBM regions,
+- a canonical graph descriptor and label-array layout,
+- timed single-label challenge rounds,
+- explicit `q < γ` calibration,
+- honest attacker-budget and claim-scope reporting,
+- strong parity, benchmark, and hardware-test infrastructure,
+- and an explicit path from development hardware to single-H100 and 8×H100 deployments.
 
 That is the required shape of the implementation.

@@ -12,4 +12,4 @@ authors = ["Repository maintainers"]
 
 [workspace.metadata.pose]
 status = "foundation"
-description = "Workspace scaffold for the future Filecoin Rust bridge and test hooks."
+description = "Workspace scaffold for optional native PoSE-DB acceleration and test hooks."

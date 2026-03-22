@@ -26,6 +26,6 @@ The foundation ships these single-H100 profiles:
 The single-gpu HBM profile now measures available HBM at runtime and plans
 toward the configured target fill ratio without an artificial 1 MiB cap.
 Benchmark runs archive result JSON, summary metrics, logs, environment
-metadata, upstream/toolchain information, and GPU inventory under
+metadata, toolchain information, and GPU inventory under
 `.pose/benchmarks/` whenever `pose bench run --profile single-h100-hbm-max`
 executes on target hardware.

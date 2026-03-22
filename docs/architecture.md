@@ -2,109 +2,87 @@
 
 ## Intent
 
-This repository is a Python-first orchestration layer around a Rust-backed
-Filecoin PoRep reference path. The design follows the repository specification:
+The target architecture is a Python-first PoSE-DB system over verifier-leased
+host memory and GPU HBM.
 
-- Python owns process lifecycle, protocol, planning, result capture, and the
-  outer proof of storage.
-- Rust owns the production inner Filecoin seal and verify path until parity
-  gates allow promotion of Python components.
-- The verifier and prover remain separate processes with a versioned protocol
-  boundary.
+The authoritative semantics live in Python:
 
-## System Boundaries
+- graph construction;
+- graph descriptor encoding;
+- challenge-set ordering;
+- label derivation;
+- soundness calculations;
+- verifier decisions and reporting.
 
-The implementation is divided into two proof boundaries:
+Native acceleration is optional and must remain semantically identical to the
+Python reference implementation.
 
-1. Inner proof boundary
-   The Rust reference bridge is the only production path for real Filecoin
-   sealing and verification.
-2. Outer proof boundary
-   The Python verifier and prover implement region leasing, region commitments,
-   challenge sampling, deadline enforcement, and session verdicts.
+## Architectural Rule
 
-These boundaries must not collapse into one another. A valid inner proof is not
-enough to prove current storage in the challenged region, and a valid outer
-proof is not enough to claim the payload is a real Filecoin artifact.
+The repository implements one protocol with two phases:
 
-## Repository Map
+1. initialization:
+   derive and materialize the session label array from the verifier's seed and
+   session parameters;
+2. fast phase:
+   run timed challenge-response rounds over resident labels.
+
+The design must not split back into separate proof layers.
+
+## Components
 
 - `docs/`
-  Architecture, threat model, protocol, benchmarking, upstream sync, and result
-  schema documentation.
-- `vendor/`
-  Vendored upstream Filecoin workspace snapshot and sync lock.
-- `rust/`
-  Rust workspace skeleton for the Python bridge and deterministic test hooks.
+  Normative and implementation-facing documentation.
+- `docs/references/`
+  Bundled paper and supporting references.
 - `proto/`
-  Versioned protocol definitions for the prover/verifier boundary.
-- `src/pose/`
-  Python package skeleton for CLI, common utilities, protocol types, prover,
-  verifier, benchmark harness, and deterministic Filecoin mirrors.
-- `bench_profiles/`
-  Named benchmark profile inputs required by the specification.
-- `scripts/`
-  Repository maintenance and lab automation entrypoints.
+  Versioned prover/verifier protocol definitions.
+- `src/pose/common/`
+  Shared utilities and canonical encodings.
+- `src/pose/graphs/`
+  Reference graph construction and ordering semantics.
+- `src/pose/hashing/`
+  Random-oracle backend plumbing and input encoding.
+- `src/pose/prover/`
+  Prover-side session execution and memory materialization.
+- `src/pose/verifier/`
+  Verifier-side planning, leasing, deadlines, soundness, and verdict logic.
+- `src/pose/benchmarks/`
+  Profiles, calibration, benchmark execution, and summaries.
 - `tests/`
-  Mandatory test category scaffolding.
+  Conformance, parity, integration, adversarial, hardware, and performance
+  coverage.
 
-## Implementation Phases
+## Process Split
 
-The spec-defined order remains the execution order:
+The verifier and prover remain separate processes.
 
-1. Vendor upstream Filecoin Rust and record provenance.
-2. Build the thin bridge and prove one real seal plus verify flow.
-3. Stand up Python prover and verifier process skeletons.
-4. Implement host-memory leased-region PoSE.
-5. Extend to single-H100 HBM.
-6. Extend to hybrid host plus HBM sessions.
-7. Scale to 8xH100.
-8. Expand parity coverage and only then consider Python component promotion.
+The verifier owns:
 
-## Current Status
+- session planning;
+- region leasing;
+- challenge generation;
+- deadline enforcement;
+- expected-label preparation;
+- soundness reporting;
+- final verdict construction.
 
-This document reflects the completed Phase 1 host-only plus Phase 2
-single-H100 HBM state:
+The prover owns:
 
-- repository layout now matches the normative shape;
-- documentation set exists and is aligned to the spec;
-- the official upstream `rust-fil-proofs` workspace is vendored, pinned, and
-  reproducibly revalidated;
-- upstream Rust workspace tests can be bootstrapped and run from this
-  repository;
-- the Rust bridge owns the first real Python-callable seal and verify path for a
-  2 KiB sector;
-- canonical PoRep-unit serialization is now defined and implemented on the
-  Python-owned path;
-- a local host-only verifier session now exists for the implemented `minimal`
-  host profile path, including verifier-owned host leasing, deterministic
-  session-plan-bound tail filler, Merkle commitment, challenge openings,
-  deadline enforcement, and cleanup;
-- the host-only CLI path now uses the versioned gRPC Unix-socket protocol from
-  `proto/pose/v1/session.proto`; the verifier keeps policy, challenge
-  selection, manifest validation, and verdict logic while the prover service
-  owns inner-proof generation, materialization, and challenge openings;
-- the same gRPC boundary now supports verifier-owned CUDA IPC HBM leases for a
-  single gpu region, including prover-side materialization into HBM,
-  verifier-side payload validation, outer HBM openings, and zeroized cleanup;
-- the benchmark harness now archives host-only and single-gpu HBM benchmark
-  bundles with result JSON, summary metrics, logs, environment metadata,
-  upstream/toolchain information, and GPU inventory;
-- the host session result artifact now records both `session_plan_root` and
-  `session_manifest_root`, and retained sessions record the resident prover
-  endpoint needed for rechallenge;
-- adversarial host-memory tests cover replayed openings, wrong outer bytes,
-  partial overwrite, sparse writes, timeout, payload-length mismatch,
-  insufficient real-PoRep ratio, and cleanup failure reporting;
-- adversarial HBM coverage now includes rejection of sessions where the leased
-  device allocation is not actually filled with the declared payload;
-- `pose verifier run --plan ...` and `pose verifier rechallenge --session-id ...`
-  are implemented on the real host-only path;
-- `pose verifier run --profile single-h100-hbm-max` and gpu-only
-  `pose verifier run --plan ...` are implemented on the real single-gpu HBM
-  path;
-- Phase 0 is complete, Phase 1 is complete on the current host-only `minimal`
-  profile path, and the Phase 2 single-gpu HBM code path plus benchmark
-  archive machinery are implemented pending a real archived single-H100 lab
-  run;
-- later hybrid, scale-out, and parity-gated promotion work remains ahead.
+- graph traversal during materialization;
+- in-place label generation;
+- writes into leased regions;
+- timed label lookup during the fast phase;
+- cleanup of its temporary state.
+
+## Current Migration State
+
+The repository is currently mid-cutover from an older design.
+
+Supported repository evolution should now follow the PoSE-DB spec only:
+
+- new code should be added under PoSE-DB concepts;
+- migration work should delete old protocol assumptions rather than preserve
+  them behind compatibility layers;
+- the checklist in `migration-checklist.md` is the execution tracker for the
+  cutover.

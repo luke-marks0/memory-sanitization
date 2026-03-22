@@ -4,21 +4,18 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from time import monotonic, sleep
+from time import monotonic, perf_counter_ns, sleep
 
 import grpc
 
 from pose.common.errors import ProtocolError, ResourceFailure
-from pose.filecoin.reference import SealArtifact
-from pose.protocol.grpc_codec import (
-    GRPC_PROTOCOL_VERSION,
-    artifact_from_proto,
-    lease_record_to_proto,
-    region_manifest_from_json,
-    session_plan_to_proto,
+from pose.common.sandbox import (
+    ProverSandboxPolicy,
+    sandboxed_child_environment,
+    sandboxed_command,
 )
+from pose.protocol.grpc_codec import GRPC_PROTOCOL_VERSION, lease_record_to_proto, session_plan_to_proto
 from pose.protocol.messages import LeaseRecord, SessionPlan
-from pose.protocol.region_payloads import RegionManifest
 from pose.v1 import session_pb2, session_pb2_grpc
 
 
@@ -88,56 +85,12 @@ def lease_regions(socket_path: str, session_id: str, leases: list[LeaseRecord]) 
         channel.close()
 
 
-def generate_inner_porep(
-    socket_path: str,
-    session_id: str,
-) -> dict[str, list[SealArtifact]]:
-    channel, stub = _channel_stub(socket_path)
-    try:
-        response = _call(
-            stub.GenerateInnerPoRep,
-            session_pb2.GenerateInnerPoRepRequest(
-                protocol_version=GRPC_PROTOCOL_VERSION,
-                session_id=session_id,
-            ),
-        )
-        by_region: dict[str, list[SealArtifact]] = {}
-        for artifact in response.artifacts:
-            region_id, decoded = artifact_from_proto(artifact)
-            by_region.setdefault(region_id, []).append(decoded)
-        return by_region
-    finally:
-        channel.close()
-
-
-def materialize_region_payloads(
-    socket_path: str,
-    session_id: str,
-) -> tuple[dict[str, tuple[RegionManifest, str]], dict[str, int]]:
-    channel, stub = _channel_stub(socket_path)
-    try:
-        response = _call(
-            stub.MaterializeRegionPayloads,
-            session_pb2.MaterializeRegionPayloadsRequest(
-                protocol_version=GRPC_PROTOCOL_VERSION,
-                session_id=session_id,
-            ),
-        )
-        commitments = {
-            commitment.region_id: region_manifest_from_json(commitment.region_manifest_json)
-            for commitment in response.commitments
-        }
-        return commitments, {key: int(value) for key, value in response.timings_ms.items()}
-    finally:
-        channel.close()
-
-
-def commit_regions(socket_path: str, session_id: str) -> None:
+def seed_session(socket_path: str, session_id: str) -> None:
     channel, stub = _channel_stub(socket_path)
     try:
         _call(
-            stub.CommitRegions,
-            session_pb2.CommitRegionsRequest(
+            stub.SeedSession,
+            session_pb2.SeedSessionRequest(
                 protocol_version=GRPC_PROTOCOL_VERSION,
                 session_id=session_id,
             ),
@@ -146,72 +99,144 @@ def commit_regions(socket_path: str, session_id: str) -> None:
         channel.close()
 
 
-def verify_inner_proofs(socket_path: str, session_id: str) -> None:
-    channel, stub = _channel_stub(socket_path)
-    try:
-        _call(
-            stub.VerifyInnerProofs,
-            session_pb2.VerifyInnerProofsRequest(
-                protocol_version=GRPC_PROTOCOL_VERSION,
-                session_id=session_id,
-            ),
-        )
-    finally:
-        channel.close()
-
-
-def challenge_outer(
+def materialize_labels(
     socket_path: str,
-    *,
     session_id: str,
-    region_id: str,
-    session_manifest_root: str,
-    challenge_indices: list[int],
-) -> tuple[list[dict[str, object]], int]:
+) -> tuple[dict[str, object], dict[str, int]]:
     channel, stub = _channel_stub(socket_path)
     try:
         response = _call(
-            stub.ChallengeOuter,
-            session_pb2.ChallengeOuterRequest(
+            stub.MaterializeLabels,
+            session_pb2.MaterializeLabelsRequest(
                 protocol_version=GRPC_PROTOCOL_VERSION,
                 session_id=session_id,
-                challenges=[
-                    session_pb2.OuterChallenge(
-                        region_id=region_id,
-                        leaf_indices=challenge_indices,
-                        session_manifest_root=session_manifest_root,
+            ),
+        )
+        return (
+            {
+                "graph_descriptor_digest": str(response.graph_descriptor_digest),
+                "scratch_peak_bytes": int(response.scratch_peak_bytes),
+                "regions": {
+                    item.region_id: {
+                        "covered_bytes": int(item.covered_bytes),
+                        "slack_bytes": int(item.slack_bytes),
+                        "declared_stage_copy_bytes": int(item.declared_stage_copy_bytes),
+                    }
+                    for item in response.regions
+                },
+            },
+            {key: int(value) for key, value in response.timings_ms.items()},
+        )
+    finally:
+        channel.close()
+
+
+def prepare_fast_phase(socket_path: str, session_id: str) -> None:
+    channel, stub = _channel_stub(socket_path)
+    try:
+        _call(
+            stub.PrepareFastPhase,
+            session_pb2.PrepareFastPhaseRequest(
+                protocol_version=GRPC_PROTOCOL_VERSION,
+                session_id=session_id,
+            ),
+        )
+    finally:
+        channel.close()
+
+
+class FastPhaseClient:
+    def __init__(self, socket_path: str, *, ready_timeout_seconds: float = 5.0) -> None:
+        self._socket_path = socket_path
+        self._ready_timeout_seconds = ready_timeout_seconds
+        self._channel = None
+        self._stub = None
+
+    def __enter__(self) -> "FastPhaseClient":
+        channel, stub = _channel_stub(self._socket_path)
+        grpc.channel_ready_future(channel).result(timeout=self._ready_timeout_seconds)
+        self._channel = channel
+        self._stub = stub
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        del exc_type, exc, tb
+        self.close()
+
+    def close(self) -> None:
+        if self._channel is not None:
+            self._channel.close()
+            self._channel = None
+            self._stub = None
+
+    def run_round(
+        self,
+        *,
+        session_id: str,
+        round_index: int,
+        challenge_index: int,
+    ) -> dict[str, object]:
+        if self._stub is None:
+            raise ProtocolError("FastPhaseClient must be entered before use.")
+        started = perf_counter_ns()
+        response = _call(
+            self._stub.RunFastPhase,
+            session_pb2.RunFastPhaseRequest(
+                rounds=[
+                    session_pb2.FastRoundChallenge(
+                        protocol_version=GRPC_PROTOCOL_VERSION,
+                        session_id=session_id,
+                        round_index=round_index,
+                        challenge_index=int(challenge_index),
                     )
                 ],
             ),
         )
-        openings = [
-            {
-                "region_id": opening.region_id,
-                "session_manifest_root": opening.session_manifest_root,
-                "leaf_index": int(opening.leaf_index),
-                "leaf_hex": opening.leaf_bytes.hex(),
-                "sibling_hashes_hex": [value.hex() for value in opening.auth_path],
-            }
-            for opening in response.openings
-        ]
-        return openings, int(response.response_ms)
-    finally:
-        channel.close()
+        round_trip_us = max(0, int((perf_counter_ns() - started) / 1000))
+        if len(response.responses) != 1:
+            raise ProtocolError(
+                "RunFastPhase must return exactly one response for a single-round request."
+            )
+        item = response.responses[0]
+        return {
+            "region_id": item.region_id,
+            "challenge_index": int(item.challenge_index),
+            "label_bytes": bytes(item.label_bytes),
+            "round_trip_us": round_trip_us,
+            "prover_lookup_round_trip_us": int(item.round_trip_us),
+        }
 
 
-def verify_outer(socket_path: str, session_id: str) -> None:
-    channel, stub = _channel_stub(socket_path)
-    try:
-        _call(
-            stub.VerifyOuter,
-            session_pb2.VerifyOuterRequest(
-                protocol_version=GRPC_PROTOCOL_VERSION,
-                session_id=session_id,
-            ),
+def run_fast_phase_round(
+    socket_path: str,
+    *,
+    session_id: str,
+    round_index: int,
+    challenge_index: int,
+) -> dict[str, object]:
+    with FastPhaseClient(socket_path) as client:
+        return client.run_round(
+            session_id=session_id,
+            round_index=round_index,
+            challenge_index=challenge_index,
         )
-    finally:
-        channel.close()
 
+
+def run_fast_phase(
+    socket_path: str,
+    *,
+    session_id: str,
+    challenge_indices: list[int],
+) -> list[dict[str, object]]:
+    with FastPhaseClient(socket_path) as client:
+        return [
+            client.run_round(
+                session_id=session_id,
+                round_index=round_index,
+                challenge_index=int(challenge_index),
+            )
+            for round_index, challenge_index in enumerate(challenge_indices)
+        ]
 
 def finalize_session(
     socket_path: str,
@@ -256,20 +281,38 @@ def start_ephemeral_prover_server(
     *,
     socket_path: str,
     timeout_seconds: float = 30.0,
+    prover_sandbox: ProverSandboxPolicy | None = None,
 ) -> subprocess.Popen[str]:
     repo_root = Path(__file__).resolve().parents[3]
+    sandbox_policy = prover_sandbox or ProverSandboxPolicy()
     env = dict(os.environ)
     env.setdefault("PYTHONPATH", str(repo_root / "src"))
+    command = [
+        sys.executable,
+        "-m",
+        "pose.cli.main",
+        "prover",
+        "grpc-serve",
+        "--socket-path",
+        socket_path,
+    ]
+    if sandbox_policy.mode == "process_budget_dev":
+        if sandbox_policy.process_memory_max_bytes <= 0:
+            raise ProtocolError(
+                "process_budget_dev prover sandbox mode requires a positive process_memory_max_bytes"
+            )
+        env = sandboxed_child_environment(
+            env,
+            require_no_visible_gpus=sandbox_policy.require_no_visible_gpus,
+        )
+        command = sandboxed_command(
+            command,
+            process_memory_max_bytes=sandbox_policy.process_memory_max_bytes,
+            memlock_max_bytes=sandbox_policy.memlock_max_bytes,
+            file_size_max_bytes=sandbox_policy.file_size_max_bytes,
+        )
     process = subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "pose.cli.main",
-            "prover",
-            "grpc-serve",
-            "--socket-path",
-            socket_path,
-        ],
+        command,
         cwd=repo_root,
         env=env,
         text=True,
@@ -286,8 +329,7 @@ def start_ephemeral_prover_server(
         try:
             discover(socket_path)
             return process
-        except (ProtocolError, ResourceFailure):
-            sleep(0.1)
+        except (OSError, ProtocolError, ResourceFailure):
+            sleep(0.05)
     process.terminate()
-    process.wait(timeout=5)
-    raise ResourceFailure("Timed out waiting for the ephemeral prover gRPC server to start")
+    raise ResourceFailure(f"Timed out waiting for prover gRPC server at {socket_path}")

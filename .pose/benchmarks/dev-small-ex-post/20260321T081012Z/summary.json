@@ -1,0 +1,173 @@
+{
+  "coverage_fraction": {
+    "mean": 1.0,
+    "p50": 1.0,
+    "p95": 1.0,
+    "p99": 1.0
+  },
+  "cpu_fallback": {
+    "detected_run_count": 0,
+    "detected_run_rate": 0.0,
+    "unique_events": []
+  },
+  "deadline_miss_rate": 0.0,
+  "finalization_runtime_ms": {
+    "mean": 12008.0,
+    "p50": 12008.0,
+    "p95": 12008.0,
+    "p99": 12008.0
+  },
+  "online_runtime_ms": {
+    "mean": 428.0,
+    "p50": 428.0,
+    "p95": 428.0,
+    "p99": 428.0
+  },
+  "per_device_hbm_coverage_bytes": {},
+  "real_porep_ratio": {
+    "mean": 1.0,
+    "p50": 1.0,
+    "p95": 1.0,
+    "p99": 1.0
+  },
+  "rechallenge_performance": null,
+  "result_count": 1,
+  "success_rate": 1.0,
+  "timings_ms": {
+    "allocation": {
+      "mean": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0
+    },
+    "challenge_response": {
+      "mean": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0
+    },
+    "cleanup": {
+      "mean": 1.0,
+      "p50": 1.0,
+      "p95": 1.0,
+      "p99": 1.0
+    },
+    "copy_to_hbm": {
+      "mean": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0
+    },
+    "copy_to_host": {
+      "mean": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0
+    },
+    "data_generation": {
+      "mean": 210.0,
+      "p50": 210.0,
+      "p95": 210.0,
+      "p99": 210.0
+    },
+    "discover": {
+      "mean": 208.0,
+      "p50": 208.0,
+      "p95": 208.0,
+      "p99": 208.0
+    },
+    "inner_verify": {
+      "mean": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0
+    },
+    "inner_verify_ex_post": {
+      "mean": 11.0,
+      "p50": 11.0,
+      "p95": 11.0,
+      "p99": 11.0
+    },
+    "object_serialization": {
+      "mean": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0
+    },
+    "online_total": {
+      "mean": 428.0,
+      "p50": 428.0,
+      "p95": 428.0,
+      "p99": 428.0
+    },
+    "outer_tree_build": {
+      "mean": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0
+    },
+    "outer_verify": {
+      "mean": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0
+    },
+    "prepare_inner_witness": {
+      "mean": 177.0,
+      "p50": 177.0,
+      "p95": 177.0,
+      "p99": 177.0
+    },
+    "region_leasing": {
+      "mean": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0
+    },
+    "seal_commit_phase1": {
+      "mean": 15.0,
+      "p50": 15.0,
+      "p95": 15.0,
+      "p99": 15.0
+    },
+    "seal_commit_phase2": {
+      "mean": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0
+    },
+    "seal_commit_phase2_ex_post": {
+      "mean": 11970.0,
+      "p50": 11970.0,
+      "p95": 11970.0,
+      "p99": 11970.0
+    },
+    "seal_pre_commit_phase1": {
+      "mean": 10.0,
+      "p50": 10.0,
+      "p95": 10.0,
+      "p99": 10.0
+    },
+    "seal_pre_commit_phase2": {
+      "mean": 152.0,
+      "p50": 152.0,
+      "p95": 152.0,
+      "p99": 152.0
+    },
+    "total": {
+      "mean": 12657.0,
+      "p50": 12657.0,
+      "p95": 12657.0,
+      "p99": 12657.0
+    }
+  },
+  "verdict_counts": {
+    "SUCCESS": 1
+  },
+  "verifier_cpu_time_ms": {
+    "mean": 137.0,
+    "p50": 137.0,
+    "p95": 137.0,
+    "p99": 137.0
+  }
+}

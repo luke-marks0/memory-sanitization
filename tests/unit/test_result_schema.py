@@ -23,14 +23,11 @@ def test_from_dict_rejects_missing_required_fields() -> None:
         SessionResult.from_dict(payload)
 
 
-def test_from_dict_accepts_missing_defaulted_fields() -> None:
+def test_from_dict_rejects_missing_defaulted_fields_from_canonical_artifact() -> None:
     payload = bootstrap_result("dev-small").to_dict()
     payload.pop("host_total_bytes")
-    payload.pop("cpu_fallback_detected")
-    payload.pop("cpu_fallback_events")
+    payload.pop("claim_notes")
+    payload.pop("notes")
 
-    result = SessionResult.from_dict(payload)
-
-    assert result.host_total_bytes == 0
-    assert result.cpu_fallback_detected is False
-    assert result.cpu_fallback_events == []
+    with pytest.raises(ProtocolError, match="claim_notes|host_total_bytes|notes"):
+        SessionResult.from_dict(payload)

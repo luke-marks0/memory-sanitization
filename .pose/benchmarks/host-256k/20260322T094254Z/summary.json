@@ -1,0 +1,182 @@
+{
+  "attacker_budget_bytes_assumed": {
+    "mean": 16384.0,
+    "p50": 16384.0,
+    "p95": 16384.0,
+    "p99": 16384.0
+  },
+  "coverage_fraction": {
+    "mean": 1.0,
+    "p50": 1.0,
+    "p95": 1.0,
+    "p99": 1.0
+  },
+  "deadline_miss_rate": 0.0,
+  "declared_stage_copy_bytes": {
+    "mean": 0.0,
+    "p50": 0.0,
+    "p95": 0.0,
+    "p99": 0.0
+  },
+  "gamma": {
+    "mean": 4096.0,
+    "p50": 4096.0,
+    "p95": 4096.0,
+    "p99": 4096.0
+  },
+  "max_round_trip_us": {
+    "mean": 1308.0,
+    "p50": 1308.0,
+    "p95": 1308.0,
+    "p99": 1308.0
+  },
+  "per_device_hbm_coverage_bytes": {},
+  "q_bound": {
+    "mean": 764.0,
+    "p50": 764.0,
+    "p95": 764.0,
+    "p99": 764.0
+  },
+  "q_over_gamma": {
+    "mean": 0.1865234375,
+    "p50": 0.1865234375,
+    "p95": 0.1865234375,
+    "p99": 0.1865234375
+  },
+  "reported_success_bound": {
+    "mean": 7.244919603492465e-71,
+    "p50": 7.244919603492465e-71,
+    "p95": 7.244919603492465e-71,
+    "p99": 7.244919603492465e-71
+  },
+  "result_count": 1,
+  "round_trip_p50_us": {
+    "mean": 242.0,
+    "p50": 242.0,
+    "p95": 242.0,
+    "p99": 242.0
+  },
+  "round_trip_p95_us": {
+    "mean": 292.0,
+    "p50": 292.0,
+    "p95": 292.0,
+    "p99": 292.0
+  },
+  "round_trip_p99_us": {
+    "mean": 749.0,
+    "p50": 749.0,
+    "p95": 749.0,
+    "p99": 749.0
+  },
+  "scratch_peak_bytes": {
+    "mean": 5439512.0,
+    "p50": 5439512.0,
+    "p95": 5439512.0,
+    "p99": 5439512.0
+  },
+  "slack_bytes": {
+    "mean": 0.0,
+    "p50": 0.0,
+    "p95": 0.0,
+    "p99": 0.0
+  },
+  "soundness_models": {
+    "random-oracle + distant-attacker + calibrated q<gamma": 1
+  },
+  "success_rate": 1.0,
+  "timings_ms": {
+    "allocation": {
+      "mean": 1.0,
+      "p50": 1.0,
+      "p95": 1.0,
+      "p99": 1.0
+    },
+    "challenge_schedule_prep": {
+      "mean": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0
+    },
+    "cleanup": {
+      "mean": 117.0,
+      "p50": 117.0,
+      "p95": 117.0,
+      "p99": 117.0
+    },
+    "copy_to_hbm": {
+      "mean": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0
+    },
+    "copy_to_host": {
+      "mean": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0
+    },
+    "discover": {
+      "mean": 1.0,
+      "p50": 1.0,
+      "p95": 1.0,
+      "p99": 1.0
+    },
+    "expected_response_prep": {
+      "mean": 15099.0,
+      "p50": 15099.0,
+      "p95": 15099.0,
+      "p99": 15099.0
+    },
+    "fast_phase_total": {
+      "mean": 205.0,
+      "p50": 205.0,
+      "p95": 205.0,
+      "p99": 205.0
+    },
+    "graph_construction": {
+      "mean": 4415.0,
+      "p50": 4415.0,
+      "p95": 4415.0,
+      "p99": 4415.0
+    },
+    "label_generation": {
+      "mean": 16708.0,
+      "p50": 16708.0,
+      "p95": 16708.0,
+      "p99": 16708.0
+    },
+    "region_leasing": {
+      "mean": 1.0,
+      "p50": 1.0,
+      "p95": 1.0,
+      "p99": 1.0
+    },
+    "stage_buffer_cleanup": {
+      "mean": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0
+    },
+    "total": {
+      "mean": 41685.0,
+      "p50": 41685.0,
+      "p95": 41685.0,
+      "p99": 41685.0
+    },
+    "verifier_check_total": {
+      "mean": 205.0,
+      "p50": 205.0,
+      "p95": 205.0,
+      "p99": 205.0
+    }
+  },
+  "verdict_counts": {
+    "SUCCESS": 1
+  },
+  "verifier_cpu_time_ms": {
+    "mean": 19760.0,
+    "p50": 19760.0,
+    "p95": 19760.0,
+    "p99": 19760.0
+  }
+}

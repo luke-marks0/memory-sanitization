@@ -4,17 +4,10 @@ import json
 import os
 import subprocess
 import sys
-from concurrent import futures
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import grpc
-
-from pose.common.merkle import commit_payload
-from pose.protocol.grpc_codec import GRPC_PROTOCOL_VERSION
+from pose.graphs import build_graph_descriptor
 from pose.protocol.result_schema import bootstrap_result
-from pose.verifier.session_store import ResidentSessionRecord, delete_resident_session, write_resident_session
-from pose.v1 import session_pb2, session_pb2_grpc
 
 
 def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
@@ -34,13 +27,22 @@ def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
 def test_prover_inspect_succeeds() -> None:
     result = run_cli("prover", "inspect")
     assert result.returncode == 0
-    assert "supports_real_filecoin_reference" in result.stdout
+    assert '"protocol": "graph-based PoSE-DB"' in result.stdout
+    assert "supports_real_filecoin_reference" not in result.stdout
 
 
 def test_bench_matrix_succeeds() -> None:
     result = run_cli("bench", "matrix", "--profiles", "bench_profiles/")
     assert result.returncode == 0
     assert "dev-small" in result.stdout
+    assert "dev-small-ex-post" not in result.stdout
+
+
+def test_verifier_calibrate_succeeds_for_dev_small_profile() -> None:
+    result = run_cli("verifier", "calibrate", "--profile", "dev-small")
+    assert result.returncode in {0, 1}
+    assert '"status": "' in result.stdout
+    assert '"q_bound"' in result.stdout
 
 
 def test_verifier_verify_record_succeeds_for_valid_bootstrap_artifact(tmp_path: Path) -> None:
@@ -56,86 +58,133 @@ def test_verifier_verify_record_succeeds_for_valid_bootstrap_artifact(tmp_path: 
 
 def test_verifier_verify_record_rejects_missing_required_fields(tmp_path: Path) -> None:
     payload = bootstrap_result("dev-small").to_dict()
-    payload.pop("host_total_bytes")
+    payload.pop("profile_name")
     record_path = tmp_path / "invalid-result.json"
     record_path.write_text(json.dumps(payload), encoding="utf-8")
 
     result = run_cli("verifier", "verify-record", str(record_path))
     assert result.returncode == 2
-    assert "host_total_bytes" in result.stderr
+    assert "profile_name" in result.stderr
 
 
-def test_verifier_rechallenge_succeeds_for_resident_session(tmp_path: Path) -> None:
-    session_id = "cli-rechallenge-session"
-    socket_path = tmp_path / "resident.sock"
-    payload = (b"a" * 16) + (b"b" * 16)
-    commitment = commit_payload(payload, 16)
-
-    class FakeServicer(session_pb2_grpc.PoseSessionServiceServicer):
-        def ChallengeOuter(self, request, _context):
-            challenge = request.challenges[0]
-            openings = []
-            for index in challenge.leaf_indices:
-                start = index * 16
-                leaf = payload[start : start + 16]
-                opening = commitment.opening(index, leaf)
-                openings.append(
-                    session_pb2.OuterOpening(
-                        region_id="host-0",
-                        session_manifest_root=challenge.session_manifest_root,
-                        leaf_index=index,
-                        leaf_bytes=leaf,
-                        auth_path=list(opening.sibling_hashes),
-                    )
-                )
-            return session_pb2.ChallengeOuterResponse(openings=openings, response_ms=0)
-
-        def Finalize(self, request, _context):
-            assert request.protocol_version == GRPC_PROTOCOL_VERSION
-            return session_pb2.FinalizeResponse(accepted=True)
-
-        def Cleanup(self, request, _context):
-            assert request.protocol_version == GRPC_PROTOCOL_VERSION
-            return session_pb2.CleanupResponse(cleaned=True, cleanup_status="ZEROIZED_AND_RELEASED")
-
-    if socket_path.exists():
-        socket_path.unlink()
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
-    session_pb2_grpc.add_PoseSessionServiceServicer_to_server(FakeServicer(), server)
-    server.add_insecure_port(f"unix:{socket_path}")
-    server.start()
-    record = ResidentSessionRecord(
-        session_id=session_id,
-        profile_name="dev-small",
-        session_nonce="session-nonce",
-        session_plan_root="plan-root",
-        session_manifest_root="manifest-root",
-        region_id="host-0",
-        region_root_hex=commitment.root_hex,
-        region_manifest_root="region-manifest-root",
-        challenge_leaf_size=16,
-        challenge_policy={"epsilon": 0.5, "lambda_bits": 1, "max_challenges": 1},
-        deadline_ms=5000,
-        cleanup_policy={"zeroize": True, "verify_zeroization": False},
-        host_total_bytes=len(payload),
-        host_usable_bytes=len(payload),
-        host_covered_bytes=len(payload),
-        real_porep_bytes=len(payload),
-        tail_filler_bytes=0,
-        real_porep_ratio=1.0,
-        coverage_fraction=1.0,
-        inner_filecoin_verified=True,
-        socket_path=str(socket_path),
-        process_id=1234,
-        lease_expiry=(datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+def test_verifier_run_succeeds_for_host_plan_file(tmp_path: Path) -> None:
+    descriptor = build_graph_descriptor(
+        label_count_m=8,
+        graph_parameter_n=2,
+        gamma=4,
+        hash_backend="blake3-xof",
+        label_width_bits=256,
     )
-    write_resident_session(record)
+    plan_path = tmp_path / "plan.yaml"
+    plan_path.write_text(
+        f"""
+session_plan:
+  session_id: cli-plan-session
+  session_seed_hex: "3333333333333333333333333333333333333333333333333333333333333333"
+  profile_name: dev-small
+  graph_family: pose-db-drg-v1
+  graph_parameter_n: 2
+  label_count_m: 8
+  gamma: 4
+  label_width_bits: 256
+  hash_backend: blake3-xof
+  graph_descriptor_digest: {descriptor.digest}
+  challenge_policy:
+    rounds_r: 4
+    target_success_bound: 1.0e-9
+    sample_with_replacement: true
+  deadline_policy:
+    response_deadline_us: 500000
+    session_timeout_ms: 60000
+  cleanup_policy:
+    zeroize: true
+    verify_zeroization: false
+  adversary_model: general
+  attacker_budget_bytes_assumed: 16
+  q_bound: 3
+  claim_notes:
+    - cli-smoke
+  regions:
+    - region_id: host-0
+      region_type: host
+      usable_bytes: 256
+      slot_count: 8
+      covered_bytes: 256
+      slack_bytes: 0
+retain_session: false
+""".strip(),
+        encoding="utf-8",
+    )
 
-    try:
-        result = run_cli("verifier", "rechallenge", "--session-id", session_id, "--release")
-        assert result.returncode == 0
-        assert '"run_class": "rechallenge"' in result.stdout
-        assert '"verdict": "SUCCESS"' in result.stdout
-    finally:
-        delete_resident_session(session_id)
-        server.stop(grace=None)
+    result = run_cli("verifier", "run", "--plan", str(plan_path))
+    assert result.returncode == 0
+    assert '"verdict": "SUCCESS"' in result.stdout
+    assert '"graph_family": "pose-db-drg-v1"' in result.stdout
+
+
+def test_verifier_rechallenge_succeeds_for_retained_host_plan_file(tmp_path: Path) -> None:
+    descriptor = build_graph_descriptor(
+        label_count_m=8,
+        graph_parameter_n=2,
+        gamma=4,
+        hash_backend="blake3-xof",
+        label_width_bits=256,
+    )
+    plan_path = tmp_path / "retained-plan.yaml"
+    plan_path.write_text(
+        f"""
+session_plan:
+  session_id: cli-retained-session
+  session_seed_hex: "5555555555555555555555555555555555555555555555555555555555555555"
+  profile_name: dev-small
+  graph_family: pose-db-drg-v1
+  graph_parameter_n: 2
+  label_count_m: 8
+  gamma: 4
+  label_width_bits: 256
+  hash_backend: blake3-xof
+  graph_descriptor_digest: {descriptor.digest}
+  challenge_policy:
+    rounds_r: 4
+    target_success_bound: 1.0e-9
+    sample_with_replacement: true
+  deadline_policy:
+    response_deadline_us: 500000
+    session_timeout_ms: 60000
+  cleanup_policy:
+    zeroize: true
+    verify_zeroization: false
+  adversary_model: general
+  attacker_budget_bytes_assumed: 16
+  q_bound: 3
+  claim_notes:
+    - cli-retained
+  regions:
+    - region_id: host-0
+      region_type: host
+      usable_bytes: 256
+      slot_count: 8
+      covered_bytes: 256
+      slack_bytes: 0
+retain_session: true
+""".strip(),
+        encoding="utf-8",
+    )
+
+    run_result = run_cli("verifier", "run", "--plan", str(plan_path))
+    assert run_result.returncode == 0
+    retained_payload = json.loads(run_result.stdout)
+    assert retained_payload["cleanup_status"] == "RETAINED_FOR_RECHALLENGE"
+
+    rechallenge_result = run_cli(
+        "verifier",
+        "rechallenge",
+        "--session-id",
+        retained_payload["session_id"],
+        "--release",
+    )
+    assert rechallenge_result.returncode == 0
+    released_payload = json.loads(rechallenge_result.stdout)
+    assert released_payload["run_class"] == "rechallenge"
+    assert released_payload["verdict"] == "SUCCESS"
+    assert released_payload["cleanup_status"] == "ZEROIZED_AND_RELEASED"

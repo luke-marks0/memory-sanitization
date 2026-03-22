@@ -49,35 +49,25 @@ class PoseSessionServiceStub(object):
                 request_serializer=pose_dot_v1_dot_session__pb2.LeaseRegionsRequest.SerializeToString,
                 response_deserializer=pose_dot_v1_dot_session__pb2.LeaseRegionsResponse.FromString,
                 _registered_method=True)
-        self.GenerateInnerPoRep = channel.unary_unary(
-                '/pose.v1.PoseSessionService/GenerateInnerPoRep',
-                request_serializer=pose_dot_v1_dot_session__pb2.GenerateInnerPoRepRequest.SerializeToString,
-                response_deserializer=pose_dot_v1_dot_session__pb2.GenerateInnerPoRepResponse.FromString,
+        self.SeedSession = channel.unary_unary(
+                '/pose.v1.PoseSessionService/SeedSession',
+                request_serializer=pose_dot_v1_dot_session__pb2.SeedSessionRequest.SerializeToString,
+                response_deserializer=pose_dot_v1_dot_session__pb2.SeedSessionResponse.FromString,
                 _registered_method=True)
-        self.MaterializeRegionPayloads = channel.unary_unary(
-                '/pose.v1.PoseSessionService/MaterializeRegionPayloads',
-                request_serializer=pose_dot_v1_dot_session__pb2.MaterializeRegionPayloadsRequest.SerializeToString,
-                response_deserializer=pose_dot_v1_dot_session__pb2.MaterializeRegionPayloadsResponse.FromString,
+        self.MaterializeLabels = channel.unary_unary(
+                '/pose.v1.PoseSessionService/MaterializeLabels',
+                request_serializer=pose_dot_v1_dot_session__pb2.MaterializeLabelsRequest.SerializeToString,
+                response_deserializer=pose_dot_v1_dot_session__pb2.MaterializeLabelsResponse.FromString,
                 _registered_method=True)
-        self.CommitRegions = channel.unary_unary(
-                '/pose.v1.PoseSessionService/CommitRegions',
-                request_serializer=pose_dot_v1_dot_session__pb2.CommitRegionsRequest.SerializeToString,
-                response_deserializer=pose_dot_v1_dot_session__pb2.CommitRegionsResponse.FromString,
+        self.PrepareFastPhase = channel.unary_unary(
+                '/pose.v1.PoseSessionService/PrepareFastPhase',
+                request_serializer=pose_dot_v1_dot_session__pb2.PrepareFastPhaseRequest.SerializeToString,
+                response_deserializer=pose_dot_v1_dot_session__pb2.PrepareFastPhaseResponse.FromString,
                 _registered_method=True)
-        self.VerifyInnerProofs = channel.unary_unary(
-                '/pose.v1.PoseSessionService/VerifyInnerProofs',
-                request_serializer=pose_dot_v1_dot_session__pb2.VerifyInnerProofsRequest.SerializeToString,
-                response_deserializer=pose_dot_v1_dot_session__pb2.VerifyInnerProofsResponse.FromString,
-                _registered_method=True)
-        self.ChallengeOuter = channel.unary_unary(
-                '/pose.v1.PoseSessionService/ChallengeOuter',
-                request_serializer=pose_dot_v1_dot_session__pb2.ChallengeOuterRequest.SerializeToString,
-                response_deserializer=pose_dot_v1_dot_session__pb2.ChallengeOuterResponse.FromString,
-                _registered_method=True)
-        self.VerifyOuter = channel.unary_unary(
-                '/pose.v1.PoseSessionService/VerifyOuter',
-                request_serializer=pose_dot_v1_dot_session__pb2.VerifyOuterRequest.SerializeToString,
-                response_deserializer=pose_dot_v1_dot_session__pb2.VerifyOuterResponse.FromString,
+        self.RunFastPhase = channel.unary_unary(
+                '/pose.v1.PoseSessionService/RunFastPhase',
+                request_serializer=pose_dot_v1_dot_session__pb2.RunFastPhaseRequest.SerializeToString,
+                response_deserializer=pose_dot_v1_dot_session__pb2.RunFastPhaseResponse.FromString,
                 _registered_method=True)
         self.Finalize = channel.unary_unary(
                 '/pose.v1.PoseSessionService/Finalize',
@@ -112,37 +102,25 @@ class PoseSessionServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def GenerateInnerPoRep(self, request, context):
+    def SeedSession(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def MaterializeRegionPayloads(self, request, context):
+    def MaterializeLabels(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def CommitRegions(self, request, context):
+    def PrepareFastPhase(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def VerifyInnerProofs(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def ChallengeOuter(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def VerifyOuter(self, request, context):
+    def RunFastPhase(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -178,35 +156,25 @@ def add_PoseSessionServiceServicer_to_server(servicer, server):
                     request_deserializer=pose_dot_v1_dot_session__pb2.LeaseRegionsRequest.FromString,
                     response_serializer=pose_dot_v1_dot_session__pb2.LeaseRegionsResponse.SerializeToString,
             ),
-            'GenerateInnerPoRep': grpc.unary_unary_rpc_method_handler(
-                    servicer.GenerateInnerPoRep,
-                    request_deserializer=pose_dot_v1_dot_session__pb2.GenerateInnerPoRepRequest.FromString,
-                    response_serializer=pose_dot_v1_dot_session__pb2.GenerateInnerPoRepResponse.SerializeToString,
+            'SeedSession': grpc.unary_unary_rpc_method_handler(
+                    servicer.SeedSession,
+                    request_deserializer=pose_dot_v1_dot_session__pb2.SeedSessionRequest.FromString,
+                    response_serializer=pose_dot_v1_dot_session__pb2.SeedSessionResponse.SerializeToString,
             ),
-            'MaterializeRegionPayloads': grpc.unary_unary_rpc_method_handler(
-                    servicer.MaterializeRegionPayloads,
-                    request_deserializer=pose_dot_v1_dot_session__pb2.MaterializeRegionPayloadsRequest.FromString,
-                    response_serializer=pose_dot_v1_dot_session__pb2.MaterializeRegionPayloadsResponse.SerializeToString,
+            'MaterializeLabels': grpc.unary_unary_rpc_method_handler(
+                    servicer.MaterializeLabels,
+                    request_deserializer=pose_dot_v1_dot_session__pb2.MaterializeLabelsRequest.FromString,
+                    response_serializer=pose_dot_v1_dot_session__pb2.MaterializeLabelsResponse.SerializeToString,
             ),
-            'CommitRegions': grpc.unary_unary_rpc_method_handler(
-                    servicer.CommitRegions,
-                    request_deserializer=pose_dot_v1_dot_session__pb2.CommitRegionsRequest.FromString,
-                    response_serializer=pose_dot_v1_dot_session__pb2.CommitRegionsResponse.SerializeToString,
+            'PrepareFastPhase': grpc.unary_unary_rpc_method_handler(
+                    servicer.PrepareFastPhase,
+                    request_deserializer=pose_dot_v1_dot_session__pb2.PrepareFastPhaseRequest.FromString,
+                    response_serializer=pose_dot_v1_dot_session__pb2.PrepareFastPhaseResponse.SerializeToString,
             ),
-            'VerifyInnerProofs': grpc.unary_unary_rpc_method_handler(
-                    servicer.VerifyInnerProofs,
-                    request_deserializer=pose_dot_v1_dot_session__pb2.VerifyInnerProofsRequest.FromString,
-                    response_serializer=pose_dot_v1_dot_session__pb2.VerifyInnerProofsResponse.SerializeToString,
-            ),
-            'ChallengeOuter': grpc.unary_unary_rpc_method_handler(
-                    servicer.ChallengeOuter,
-                    request_deserializer=pose_dot_v1_dot_session__pb2.ChallengeOuterRequest.FromString,
-                    response_serializer=pose_dot_v1_dot_session__pb2.ChallengeOuterResponse.SerializeToString,
-            ),
-            'VerifyOuter': grpc.unary_unary_rpc_method_handler(
-                    servicer.VerifyOuter,
-                    request_deserializer=pose_dot_v1_dot_session__pb2.VerifyOuterRequest.FromString,
-                    response_serializer=pose_dot_v1_dot_session__pb2.VerifyOuterResponse.SerializeToString,
+            'RunFastPhase': grpc.unary_unary_rpc_method_handler(
+                    servicer.RunFastPhase,
+                    request_deserializer=pose_dot_v1_dot_session__pb2.RunFastPhaseRequest.FromString,
+                    response_serializer=pose_dot_v1_dot_session__pb2.RunFastPhaseResponse.SerializeToString,
             ),
             'Finalize': grpc.unary_unary_rpc_method_handler(
                     servicer.Finalize,
@@ -311,7 +279,7 @@ class PoseSessionService(object):
             _registered_method=True)
 
     @staticmethod
-    def GenerateInnerPoRep(request,
+    def SeedSession(request,
             target,
             options=(),
             channel_credentials=None,
@@ -324,9 +292,9 @@ class PoseSessionService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/pose.v1.PoseSessionService/GenerateInnerPoRep',
-            pose_dot_v1_dot_session__pb2.GenerateInnerPoRepRequest.SerializeToString,
-            pose_dot_v1_dot_session__pb2.GenerateInnerPoRepResponse.FromString,
+            '/pose.v1.PoseSessionService/SeedSession',
+            pose_dot_v1_dot_session__pb2.SeedSessionRequest.SerializeToString,
+            pose_dot_v1_dot_session__pb2.SeedSessionResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -338,7 +306,7 @@ class PoseSessionService(object):
             _registered_method=True)
 
     @staticmethod
-    def MaterializeRegionPayloads(request,
+    def MaterializeLabels(request,
             target,
             options=(),
             channel_credentials=None,
@@ -351,9 +319,9 @@ class PoseSessionService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/pose.v1.PoseSessionService/MaterializeRegionPayloads',
-            pose_dot_v1_dot_session__pb2.MaterializeRegionPayloadsRequest.SerializeToString,
-            pose_dot_v1_dot_session__pb2.MaterializeRegionPayloadsResponse.FromString,
+            '/pose.v1.PoseSessionService/MaterializeLabels',
+            pose_dot_v1_dot_session__pb2.MaterializeLabelsRequest.SerializeToString,
+            pose_dot_v1_dot_session__pb2.MaterializeLabelsResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -365,7 +333,7 @@ class PoseSessionService(object):
             _registered_method=True)
 
     @staticmethod
-    def CommitRegions(request,
+    def PrepareFastPhase(request,
             target,
             options=(),
             channel_credentials=None,
@@ -378,9 +346,9 @@ class PoseSessionService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/pose.v1.PoseSessionService/CommitRegions',
-            pose_dot_v1_dot_session__pb2.CommitRegionsRequest.SerializeToString,
-            pose_dot_v1_dot_session__pb2.CommitRegionsResponse.FromString,
+            '/pose.v1.PoseSessionService/PrepareFastPhase',
+            pose_dot_v1_dot_session__pb2.PrepareFastPhaseRequest.SerializeToString,
+            pose_dot_v1_dot_session__pb2.PrepareFastPhaseResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -392,7 +360,7 @@ class PoseSessionService(object):
             _registered_method=True)
 
     @staticmethod
-    def VerifyInnerProofs(request,
+    def RunFastPhase(request,
             target,
             options=(),
             channel_credentials=None,
@@ -405,63 +373,9 @@ class PoseSessionService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/pose.v1.PoseSessionService/VerifyInnerProofs',
-            pose_dot_v1_dot_session__pb2.VerifyInnerProofsRequest.SerializeToString,
-            pose_dot_v1_dot_session__pb2.VerifyInnerProofsResponse.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def ChallengeOuter(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/pose.v1.PoseSessionService/ChallengeOuter',
-            pose_dot_v1_dot_session__pb2.ChallengeOuterRequest.SerializeToString,
-            pose_dot_v1_dot_session__pb2.ChallengeOuterResponse.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def VerifyOuter(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/pose.v1.PoseSessionService/VerifyOuter',
-            pose_dot_v1_dot_session__pb2.VerifyOuterRequest.SerializeToString,
-            pose_dot_v1_dot_session__pb2.VerifyOuterResponse.FromString,
+            '/pose.v1.PoseSessionService/RunFastPhase',
+            pose_dot_v1_dot_session__pb2.RunFastPhaseRequest.SerializeToString,
+            pose_dot_v1_dot_session__pb2.RunFastPhaseResponse.FromString,
             options,
             channel_credentials,
             insecure,

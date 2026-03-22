@@ -1,0 +1,47 @@
+{
+  "note": "Slot-planned PoSE-DB profile execution is available; GPU and hybrid profiles still depend on matching local hardware.",
+  "profile": {
+    "adversary_model": "general",
+    "attacker_budget_bytes_assumed": 16384,
+    "benchmark_class": "cold",
+    "calibration_policy": {
+      "hash_measurement_rounds": 3,
+      "hashes_per_round": 4096,
+      "lookup_samples": 512,
+      "safety_margin_fraction": 0.25,
+      "serialization_overhead_us": 50,
+      "transport_overhead_us": 100
+    },
+    "challenge_policy": {
+      "rounds_r": 64,
+      "sample_with_replacement": true,
+      "target_success_bound": 1e-09
+    },
+    "cleanup_policy": {
+      "verify_zeroization": false,
+      "zeroize": true
+    },
+    "coverage_threshold": 1.0,
+    "deadline_policy": {
+      "response_deadline_us": 2500,
+      "session_timeout_ms": 60000
+    },
+    "graph_family": "pose-db-drg-v1",
+    "hash_backend": "blake3-xof",
+    "host_target_fraction": 1.0,
+    "name": "host-256k",
+    "per_gpu_target_fraction": 0.0,
+    "repetition_count": 1,
+    "reserve_policy": {
+      "host_bytes": 262144,
+      "per_gpu_bytes": 0
+    },
+    "target_devices": {
+      "gpus": [],
+      "host": true
+    },
+    "transport_mode": "grpc",
+    "w_bits": 256
+  },
+  "status": "session-ready"
+}

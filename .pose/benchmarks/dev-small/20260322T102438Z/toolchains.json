@@ -1,0 +1,6 @@
+{
+  "cargo_version": "unavailable",
+  "rust_toolchain": "[toolchain]\nchannel = \"1.93.1\"\ncomponents = [\"clippy\", \"rustfmt\"]\nprofile = \"minimal\"\n",
+  "rustc_version": "unavailable",
+  "upstream_rust_toolchain": "1.93.1"
+}

@@ -31,12 +31,19 @@ class HostLease:
             raise ResourceFailure(
                 f"Payload length {len(payload)} exceeds host lease size {self.record.usable_bytes}"
             )
-        self.mapping.seek(0)
-        self.mapping.write(payload)
+        self.write_at(payload, offset=0)
         remaining = self.record.usable_bytes - len(payload)
         if remaining:
             self._zero_range(len(payload), remaining)
         self.mapping.flush()
+
+    def write_at(self, payload: bytes, *, offset: int) -> None:
+        if offset < 0 or offset + len(payload) > self.record.usable_bytes:
+            raise ResourceFailure(
+                f"Invalid host lease write offset={offset} length={len(payload)} "
+                f"for size {self.record.usable_bytes}"
+            )
+        self.mapping[offset : offset + len(payload)] = payload
 
     def read(self, length: int | None = None, offset: int = 0) -> bytes:
         requested = self.record.usable_bytes if length is None else length
@@ -168,11 +175,19 @@ class HostLeaseAttachment:
             raise ResourceFailure(
                 f"Payload length {len(payload)} exceeds host attachment size {self.usable_bytes}"
             )
-        self.mapping.seek(0)
-        self.mapping.write(payload)
+        self.write_at(payload, offset=0)
         remaining = self.usable_bytes - len(payload)
         if remaining:
             self.mapping[len(payload) : self.usable_bytes] = bytes(remaining)
+        self.mapping.flush()
+
+    def write_at(self, payload: bytes, *, offset: int) -> None:
+        if offset < 0 or offset + len(payload) > self.usable_bytes:
+            raise ResourceFailure(
+                f"Invalid host attachment write offset={offset} length={len(payload)} "
+                f"for size {self.usable_bytes}"
+            )
+        self.mapping[offset : offset + len(payload)] = payload
         self.mapping.flush()
 
     def read(self, length: int, offset: int = 0) -> bytes:

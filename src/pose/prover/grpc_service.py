@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import mmap
 from concurrent import futures
+from array import array
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from sys import getsizeof
 from time import perf_counter
 
 import grpc
@@ -12,19 +13,10 @@ import grpc
 from pose.common.errors import ProtocolError, ResourceFailure
 from pose.common.gpu_lease import GpuLeaseAttachment, attach_gpu_lease
 from pose.common.host_lease import HostLeaseAttachment, attach_host_lease
-from pose.common.merkle import commit_payload
-from pose.filecoin.porep_unit import build_porep_unit_from_seal_artifact
-from pose.filecoin.reference import SealArtifact, VendoredFilecoinReference
-from pose.protocol.grpc_codec import (
-    GRPC_PROTOCOL_VERSION,
-    artifact_to_proto,
-    lease_record_from_proto,
-    region_manifest_to_json,
-    session_plan_from_proto,
-)
+from pose.graphs import PoseDbGraph, build_graph_descriptor, build_pose_db_graph
+from pose.hashing import internal_label_bytes, source_label_bytes
+from pose.protocol.grpc_codec import GRPC_PROTOCOL_VERSION, lease_record_from_proto, session_plan_from_proto
 from pose.protocol.messages import LeaseRecord, SessionPlan
-from pose.protocol.region_payloads import RegionManifest, build_region_manifest, build_region_payload
-from pose.prover.host_worker import _cleanup_mapping, _materialize_locally
 from pose.v1 import session_pb2, session_pb2_grpc
 
 
@@ -33,9 +25,9 @@ class SessionState:
     plan: SessionPlan
     leases: dict[str, LeaseRecord] = field(default_factory=dict)
     attachments: dict[str, HostLeaseAttachment | GpuLeaseAttachment] = field(default_factory=dict)
-    artifacts_by_region: dict[str, list[SealArtifact]] = field(default_factory=dict)
-    region_manifests: dict[str, RegionManifest] = field(default_factory=dict)
-    commitments: dict[str, object] = field(default_factory=dict)
+    graph: PoseDbGraph | None = None
+    seeded: bool = False
+    materialized: bool = False
     finalized: bool = False
     retained: bool = False
     cleanup_status: str = "NOT_RUN"
@@ -43,7 +35,6 @@ class SessionState:
 
 class PoseSessionServicer(session_pb2_grpc.PoseSessionServiceServicer):
     def __init__(self) -> None:
-        self._reference = VendoredFilecoinReference()
         self._sessions: dict[str, SessionState] = {}
 
     def _require_protocol_version(self, protocol_version: str) -> None:
@@ -56,78 +47,87 @@ class PoseSessionServicer(session_pb2_grpc.PoseSessionServiceServicer):
         except KeyError as error:
             raise ProtocolError(f"Unknown session id: {session_id}") from error
 
-    def _require_single_region_plan(self, plan: SessionPlan) -> None:
-        if plan.unit_count <= 0:
-            raise ProtocolError(f"Session plan unit_count must be positive, got {plan.unit_count}")
-        if len(plan.regions) != 1:
-            raise ProtocolError("Current gRPC prover requires exactly one planned region.")
-        region = plan.regions[0]
-        if region.region_type not in {"host", "gpu"}:
-            raise ProtocolError(f"Unsupported region type: {region.region_type!r}")
-        if region.region_type == "host" and region.gpu_device is not None:
-            raise ProtocolError("Host regions must not set gpu_device.")
-        if region.region_type == "gpu" and region.gpu_device is None:
-            raise ProtocolError("GPU regions must include gpu_device.")
-        if plan.challenge_leaf_size <= 0:
-            raise ProtocolError(
-                f"Session plan challenge leaf size must be positive, got {plan.challenge_leaf_size}"
-            )
-        if region.usable_bytes <= 0 or region.usable_bytes % plan.challenge_leaf_size != 0:
-            raise ProtocolError(
-                "Region usable_bytes must be a positive multiple of the challenge leaf size."
-            )
-        if len(plan.sector_plan) != plan.unit_count:
-            raise ProtocolError(
-                "Current gRPC prover requires one explicit sector-plan entry per planned PoRep unit."
-            )
-
-        seen_indices: set[int] = set()
-        for item in plan.sector_plan:
-            if item.region_id != region.region_id:
-                raise ProtocolError(
-                    f"Sector-plan entry targets unexpected region {item.region_id!r}; "
-                    f"expected {region.region_id!r}"
-                )
-            if item.unit_index in seen_indices:
-                raise ProtocolError(f"Duplicate sector-plan unit index: {item.unit_index}")
-            seen_indices.add(item.unit_index)
-            if item.sector_id <= 0:
-                raise ProtocolError(f"Sector-plan sector_id must be positive: {item.sector_id}")
-            if not item.prover_id_hex or not item.ticket_hex or not item.seed_hex:
-                raise ProtocolError(
-                    "Sector-plan entries must include prover_id_hex, ticket_hex, and seed_hex."
-                )
-
-        if seen_indices != set(range(plan.unit_count)):
-            raise ProtocolError(
-                f"Sector-plan indices must match 0..{plan.unit_count - 1}, got {sorted(seen_indices)}"
-            )
-
     def _require_not_expired(self, state: SessionState) -> None:
         if not state.leases:
             return
-        expiry = datetime.fromisoformat(next(iter(state.leases.values())).lease_expiry)
-        if expiry <= datetime.now(UTC):
+        now = datetime.now(UTC)
+        expiries = [datetime.fromisoformat(lease.lease_expiry) for lease in state.leases.values()]
+        if any(expiry <= now for expiry in expiries):
             self._cleanup_state(state)
             raise ProtocolError("Session lease expired before the requested operation.")
+
+    def _require_plan_shape(self, plan: SessionPlan) -> None:
+        expected_descriptor = build_graph_descriptor(
+            label_count_m=plan.label_count_m,
+            graph_parameter_n=plan.graph_parameter_n,
+            gamma=plan.gamma,
+            hash_backend=plan.hash_backend,
+            label_width_bits=plan.label_width_bits,
+            graph_family=plan.graph_family,
+        )
+        if plan.graph_descriptor_digest != expected_descriptor.digest:
+            raise ProtocolError(
+                "Session plan graph_descriptor_digest does not match the canonical descriptor digest for the "
+                f"declared graph parameters: {plan.graph_descriptor_digest!r} != {expected_descriptor.digest!r}"
+            )
+        if plan.label_count_m <= 0:
+            raise ProtocolError(f"Session plan label_count_m must be positive, got {plan.label_count_m}")
+        if plan.gamma <= 0:
+            raise ProtocolError(f"Session plan gamma must be positive, got {plan.gamma}")
+        if not plan.regions:
+            raise ProtocolError("PoSE-DB sessions require at least one planned region.")
+        label_width_bytes = plan.label_width_bits // 8
+        seen_region_ids: set[str] = set()
+        for region in plan.regions:
+            if region.region_id in seen_region_ids:
+                raise ProtocolError(f"Duplicate region id in session plan: {region.region_id}")
+            seen_region_ids.add(region.region_id)
+            if region.region_type not in {"host", "gpu"}:
+                raise ProtocolError(f"Unsupported region type: {region.region_type!r}")
+            if region.region_type == "host" and region.gpu_device is not None:
+                raise ProtocolError("Host regions must not set gpu_device.")
+            if region.region_type == "gpu" and region.gpu_device is None:
+                raise ProtocolError("GPU regions must include gpu_device.")
+            if region.slot_count <= 0:
+                raise ProtocolError(f"Region slot_count must be positive, got {region.slot_count}")
+            expected_covered_bytes = region.slot_count * label_width_bytes
+            if region.covered_bytes != expected_covered_bytes:
+                raise ProtocolError(
+                    f"Region covered_bytes must equal slot_count * label_width_bytes: "
+                    f"{region.covered_bytes} != {expected_covered_bytes}"
+                )
+            if region.usable_bytes < region.covered_bytes:
+                raise ProtocolError("Region usable_bytes must be at least covered_bytes.")
+            if region.slack_bytes != region.usable_bytes - region.covered_bytes:
+                raise ProtocolError(
+                    "Region slack_bytes must equal usable_bytes - covered_bytes."
+                )
+        if sum(item.slot_count for item in plan.regions) != plan.label_count_m:
+            raise ProtocolError("Sum of region slot_count values must equal label_count_m.")
 
     def _cleanup_state(self, state: SessionState) -> str:
         cleanup_status = "NOT_RUN"
         for attachment in state.attachments.values():
             if isinstance(attachment, HostLeaseAttachment):
-                cleanup_status = _cleanup_mapping(
-                    mapping=attachment.mapping,
-                    usable_bytes=attachment.usable_bytes,
-                    zeroize=state.plan.cleanup_policy.zeroize,
-                    verify_zeroization=state.plan.cleanup_policy.verify_zeroization,
-                )
+                if state.plan.cleanup_policy.zeroize:
+                    attachment.write(b"")
+                    if (
+                        state.plan.cleanup_policy.verify_zeroization
+                        and attachment.read(attachment.usable_bytes) != bytes(attachment.usable_bytes)
+                    ):
+                        raise ResourceFailure("Host lease zeroization verification failed")
+                    cleanup_status = (
+                        "ZEROIZED_AND_VERIFIED"
+                        if state.plan.cleanup_policy.verify_zeroization
+                        else "ZEROIZED_AND_RELEASED"
+                    )
+                else:
+                    cleanup_status = "RELEASED_WITHOUT_ZEROIZE"
+                attachment.close()
             else:
                 if state.plan.cleanup_policy.zeroize:
                     attachment.zeroize()
-                    if (
-                        state.plan.cleanup_policy.verify_zeroization
-                        and not attachment.verify_zeroized()
-                    ):
+                    if state.plan.cleanup_policy.verify_zeroization and not attachment.verify_zeroized():
                         raise ResourceFailure("GPU lease zeroization verification failed")
                     cleanup_status = (
                         "ZEROIZED_AND_VERIFIED"
@@ -136,11 +136,8 @@ class PoseSessionServicer(session_pb2_grpc.PoseSessionServiceServicer):
                     )
                 else:
                     cleanup_status = "RELEASED_WITHOUT_ZEROIZE"
-            attachment.close()
+                attachment.close()
         state.attachments.clear()
-        state.artifacts_by_region.clear()
-        state.region_manifests.clear()
-        state.commitments.clear()
         state.cleanup_status = cleanup_status
         return cleanup_status
 
@@ -149,29 +146,48 @@ class PoseSessionServicer(session_pb2_grpc.PoseSessionServiceServicer):
             context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(error))
         context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(error))
 
-    def _serialize_artifacts(
+    def _attachment_for_lease(
+        self,
+        lease: LeaseRecord,
+    ) -> HostLeaseAttachment | GpuLeaseAttachment:
+        if lease.region_type == "host":
+            return attach_host_lease(lease.lease_handle, usable_bytes=lease.usable_bytes)
+        if lease.region_type == "gpu":
+            return attach_gpu_lease(lease.lease_handle, usable_bytes=lease.usable_bytes)
+        raise ProtocolError(f"Unsupported region type: {lease.region_type!r}")
+
+    def _region_offset(self, state: SessionState, region_id: str) -> int:
+        offset = 0
+        for region in state.plan.regions:
+            if region.region_id == region_id:
+                return offset
+            offset += region.slot_count
+        raise ProtocolError(f"Unknown region id in plan: {region_id}")
+
+    def _resolve_slot(self, state: SessionState, challenge_index: int) -> tuple[str, int]:
+        if challenge_index < 0 or challenge_index >= state.plan.label_count_m:
+            raise ProtocolError(
+                f"Challenge index {challenge_index} is outside [0, {state.plan.label_count_m})"
+            )
+        cursor = 0
+        for region in state.plan.regions:
+            next_cursor = cursor + region.slot_count
+            if challenge_index < next_cursor:
+                return region.region_id, challenge_index - cursor
+            cursor = next_cursor
+        raise ProtocolError(f"Challenge index {challenge_index} could not be mapped to a region.")
+
+    def _estimated_static_scratch_bytes(
         self,
         *,
-        state: SessionState,
-        region_id: str,
-    ) -> tuple[list[object], bytes, int]:
-        artifacts = state.artifacts_by_region.get(region_id)
-        if not artifacts:
-            raise ProtocolError("GenerateInnerPoRep must run before MaterializeRegionPayloads.")
-        units = []
-        payload_parts: list[bytes] = []
-        object_serialization_started = perf_counter()
-        for artifact in artifacts:
-            unit = build_porep_unit_from_seal_artifact(
-                artifact,
-                storage_profile=state.plan.porep_unit_profile,
-                leaf_alignment_bytes=state.plan.challenge_leaf_size,
-            )
-            units.append(unit)
-            payload_parts.append(unit.serialized_bytes)
-        return units, b"".join(payload_parts), int(
-            (perf_counter() - object_serialization_started) * 1000
-        )
+        successor_counts: array,
+        challenge_index_by_node: dict[int, int],
+    ) -> int:
+        total = getsizeof(successor_counts)
+        total += getsizeof(challenge_index_by_node)
+        for node_index, challenge_index in challenge_index_by_node.items():
+            total += getsizeof(node_index) + getsizeof(challenge_index)
+        return total
 
     def Discover(
         self,
@@ -188,8 +204,8 @@ class PoseSessionServicer(session_pb2_grpc.PoseSessionServiceServicer):
                 "host-memory",
                 "gpu-hbm",
                 "cuda-ipc",
-                "real-filecoin-reference",
-                "rechallenge",
+                "pose-db-control-plane",
+                "pose-db-fast-phase",
                 "unix-domain-sockets",
             ],
         )
@@ -202,7 +218,7 @@ class PoseSessionServicer(session_pb2_grpc.PoseSessionServiceServicer):
         try:
             self._require_protocol_version(request.protocol_version)
             plan = session_plan_from_proto(request.plan)
-            self._require_single_region_plan(plan)
+            self._require_plan_shape(plan)
             if plan.session_id in self._sessions:
                 raise ProtocolError(f"Duplicate session id: {plan.session_id}")
             self._sessions[plan.session_id] = SessionState(plan=plan)
@@ -218,10 +234,7 @@ class PoseSessionServicer(session_pb2_grpc.PoseSessionServiceServicer):
         try:
             self._require_protocol_version(request.protocol_version)
             state = self._session(request.session_id)
-            leases = {
-                lease.region_id: lease_record_from_proto(lease)
-                for lease in request.leases
-            }
+            leases = {lease.region_id: lease_record_from_proto(lease) for lease in request.leases}
             if set(leases) != {region.region_id for region in state.plan.regions}:
                 raise ProtocolError("LeaseRegions must provide exactly one lease per planned region.")
             state.leases = leases
@@ -229,190 +242,235 @@ class PoseSessionServicer(session_pb2_grpc.PoseSessionServiceServicer):
             self._abort(context, error)
         return session_pb2.LeaseRegionsResponse(accepted=True)
 
-    def GenerateInnerPoRep(
+    def SeedSession(
         self,
-        request: session_pb2.GenerateInnerPoRepRequest,
+        request: session_pb2.SeedSessionRequest,
         context: grpc.ServicerContext,
-    ) -> session_pb2.GenerateInnerPoRepResponse:
+    ) -> session_pb2.SeedSessionResponse:
         try:
             self._require_protocol_version(request.protocol_version)
             state = self._session(request.session_id)
             self._require_not_expired(state)
-            region = state.plan.regions[0]
-            artifacts, _units, _payload, _object_serialization_ms = _materialize_locally(
-                reference=self._reference,
-                storage_profile=state.plan.porep_unit_profile,
-                leaf_size=state.plan.challenge_leaf_size,
-                unit_count=state.plan.unit_count,
-                sector_plan=state.plan.sector_plan,
+            if not state.leases:
+                raise ProtocolError("LeaseRegions must run before SeedSession.")
+            state.graph = build_pose_db_graph(
+                label_count_m=state.plan.label_count_m,
+                graph_parameter_n=state.plan.graph_parameter_n,
+                gamma=state.plan.gamma,
+                hash_backend=state.plan.hash_backend,
+                label_width_bits=state.plan.label_width_bits,
             )
-            state.artifacts_by_region[region.region_id] = list(artifacts)
+            state.seeded = True
         except Exception as error:  # pragma: no cover - grpc abort
             self._abort(context, error)
-        return session_pb2.GenerateInnerPoRepResponse(
-            artifacts=[
-                artifact_to_proto(region.region_id, artifact)
-                for artifact in state.artifacts_by_region[region.region_id]
-            ]
-        )
+        return session_pb2.SeedSessionResponse(accepted=True)
 
-    def MaterializeRegionPayloads(
+    def MaterializeLabels(
         self,
-        request: session_pb2.MaterializeRegionPayloadsRequest,
+        request: session_pb2.MaterializeLabelsRequest,
         context: grpc.ServicerContext,
-    ) -> session_pb2.MaterializeRegionPayloadsResponse:
+    ) -> session_pb2.MaterializeLabelsResponse:
         try:
             self._require_protocol_version(request.protocol_version)
             state = self._session(request.session_id)
             self._require_not_expired(state)
-            region = state.plan.regions[0]
-            lease = state.leases.get(region.region_id)
-            if lease is None:
-                raise ProtocolError("LeaseRegions must run before MaterializeRegionPayloads.")
-            units, real_payload, object_serialization_ms = self._serialize_artifacts(
-                state=state,
-                region_id=region.region_id,
-            )
-            tail_filler_bytes = region.usable_bytes - len(real_payload)
-            if tail_filler_bytes < 0:
-                raise ResourceFailure(
-                    f"Materialized payload length {len(real_payload)} exceeds lease size {region.usable_bytes}"
-                )
-            if tail_filler_bytes > min(state.plan.challenge_leaf_size, 1024 * 1024):
-                raise ResourceFailure(
-                    f"Tail filler requirement {tail_filler_bytes} exceeds the allowed limit "
-                    f"for leaf size {state.plan.challenge_leaf_size}"
-                )
-            payload = build_region_payload(
-                [unit.serialized_bytes for unit in units],
-                session_nonce=state.plan.nonce,
-                region_id=region.region_id,
-                session_plan_root=state.plan.plan_root_hex,
-                tail_filler_bytes=tail_filler_bytes,
-            )
+            if not state.seeded:
+                raise ProtocolError("SeedSession must run before MaterializeLabels.")
+            if state.graph is None:
+                raise ProtocolError("SeedSession must initialize the session graph before MaterializeLabels.")
+
+            label_generation_started = perf_counter()
             copy_to_host_ms = 0
             copy_to_hbm_ms = 0
-            copy_started = perf_counter()
-            if region.region_type == "host":
-                attachment = attach_host_lease(lease.lease_handle, usable_bytes=lease.usable_bytes)
-                attachment.write(payload)
-                copy_to_host_ms = int((perf_counter() - copy_started) * 1000)
-            else:
-                attachment = attach_gpu_lease(lease.lease_handle, usable_bytes=lease.usable_bytes)
-                attachment.write(payload)
-                copy_to_hbm_ms = int((perf_counter() - copy_started) * 1000)
-            outer_tree_started = perf_counter()
-            commitment = commit_payload(payload, state.plan.challenge_leaf_size)
-            outer_tree_build_ms = int((perf_counter() - outer_tree_started) * 1000)
-            manifest = build_region_manifest(
-                region_id=region.region_id,
-                region_type=region.region_type,
-                usable_bytes=lease.usable_bytes,
-                leaf_size=state.plan.challenge_leaf_size,
-                payload=payload,
-                merkle_root_hex=commitment.root_hex,
-                units=tuple(units),
-                tail_filler_bytes=tail_filler_bytes,
+            stage_buffer_cleanup_ms = 0
+            scratch_peak_bytes = 0
+            regions: list[session_pb2.RegionMaterialization] = []
+            label_width_bytes = state.plan.label_width_bits // 8
+            session_seed = bytes.fromhex(state.plan.session_seed_hex)
+            challenge_index_by_node = {
+                node: challenge_index
+                for challenge_index, node in enumerate(state.graph.challenge_set)
+            }
+            successor_counts = array("I", [0]) * state.graph.node_count
+            for predecessors in state.graph.predecessors:
+                for predecessor in predecessors:
+                    successor_counts[predecessor] += 1
+            static_scratch_bytes = self._estimated_static_scratch_bytes(
+                successor_counts=successor_counts,
+                challenge_index_by_node=challenge_index_by_node,
             )
-            if region.region_id in state.attachments:
-                state.attachments[region.region_id].close()
-            state.attachments[region.region_id] = attachment
-            state.region_manifests[region.region_id] = manifest
-            state.commitments[region.region_id] = commitment
+            region_type_by_id = {
+                region.region_id: region.region_type
+                for region in state.plan.regions
+            }
+            for region in state.plan.regions:
+                lease = state.leases.get(region.region_id)
+                if lease is None:
+                    raise ProtocolError("LeaseRegions must run before MaterializeLabels.")
+                attachment = self._attachment_for_lease(lease)
+                if region.region_id in state.attachments:
+                    state.attachments[region.region_id].close()
+                state.attachments[region.region_id] = attachment
+                regions.append(
+                    session_pb2.RegionMaterialization(
+                        region_id=region.region_id,
+                        covered_bytes=region.covered_bytes,
+                        slack_bytes=region.slack_bytes,
+                        declared_stage_copy_bytes=0,
+                    )
+                )
+            scratch_labels: dict[int, bytearray] = {}
+            scratch_entry_bytes_total = 0
+            scratch_entry_bytes_by_node: dict[int, int] = {}
+            for node_index, predecessors in enumerate(state.graph.predecessors):
+                predecessor_labels: list[bytes] = []
+                for predecessor in predecessors:
+                    scratch_label = scratch_labels.get(predecessor)
+                    if scratch_label is not None:
+                        predecessor_labels.append(bytes(scratch_label))
+                        continue
+                    challenge_index = challenge_index_by_node.get(predecessor, -1)
+                    if challenge_index < 0:
+                        raise ProtocolError(
+                            f"Transient predecessor label for node {predecessor} was not retained during materialization."
+                        )
+                    region_id, local_slot_index = self._resolve_slot(state, challenge_index)
+                    predecessor_labels.append(
+                        state.attachments[region_id].read(
+                            length=label_width_bytes,
+                            offset=local_slot_index * label_width_bytes,
+                        )
+                    )
+                scratch_peak_bytes = max(
+                    scratch_peak_bytes,
+                    static_scratch_bytes
+                    + getsizeof(scratch_labels)
+                    + scratch_entry_bytes_total
+                    + getsizeof(predecessor_labels)
+                    + sum(getsizeof(label_bytes) for label_bytes in predecessor_labels),
+                )
+
+                if not predecessors:
+                    label_bytes = source_label_bytes(
+                        session_seed=session_seed,
+                        graph_descriptor_digest=state.graph.graph_descriptor_digest,
+                        node_index=node_index,
+                        hash_backend=state.plan.hash_backend,
+                        output_bytes=label_width_bytes,
+                    )
+                else:
+                    label_bytes = internal_label_bytes(
+                        session_seed=session_seed,
+                        graph_descriptor_digest=state.graph.graph_descriptor_digest,
+                        node_index=node_index,
+                        predecessor_labels=predecessor_labels,
+                        hash_backend=state.plan.hash_backend,
+                        output_bytes=label_width_bytes,
+                    )
+
+                challenge_index = challenge_index_by_node.get(node_index, -1)
+                if challenge_index >= 0:
+                    region_id, local_slot_index = self._resolve_slot(state, challenge_index)
+                    copy_started = perf_counter()
+                    state.attachments[region_id].write_at(
+                        label_bytes,
+                        offset=local_slot_index * label_width_bytes,
+                    )
+                    copy_elapsed_ms = int((perf_counter() - copy_started) * 1000)
+                    if region_type_by_id[region_id] == "host":
+                        copy_to_host_ms += copy_elapsed_ms
+                    else:
+                        copy_to_hbm_ms += copy_elapsed_ms
+                elif successor_counts[node_index] > 0:
+                    scratch_labels[node_index] = bytearray(label_bytes)
+                    entry_bytes = getsizeof(node_index) + getsizeof(scratch_labels[node_index])
+                    scratch_entry_bytes_by_node[node_index] = entry_bytes
+                    scratch_entry_bytes_total += entry_bytes
+                    scratch_peak_bytes = max(
+                        scratch_peak_bytes,
+                        static_scratch_bytes
+                        + getsizeof(scratch_labels)
+                        + scratch_entry_bytes_total
+                        + getsizeof(label_bytes),
+                    )
+
+                for predecessor in predecessors:
+                    successor_counts[predecessor] -= 1
+                    if successor_counts[predecessor] == 0:
+                        scratch_label = scratch_labels.pop(predecessor, None)
+                        if scratch_label is not None:
+                            scratch_entry_bytes_total -= scratch_entry_bytes_by_node.pop(predecessor, 0)
+                            cleanup_started = perf_counter()
+                            scratch_label[:] = b"\x00" * len(scratch_label)
+                            stage_buffer_cleanup_ms += int((perf_counter() - cleanup_started) * 1000)
+            label_generation_ms = int((perf_counter() - label_generation_started) * 1000)
+            state.materialized = True
         except Exception as error:  # pragma: no cover - grpc abort
             self._abort(context, error)
-        return session_pb2.MaterializeRegionPayloadsResponse(
-            commitments=[
-                session_pb2.RegionCommitment(
-                    region_id=region.region_id,
-                    region_root_hex=manifest.merkle_root_hex,
-                    covered_bytes=manifest.payload_length_bytes,
-                    real_porep_bytes=manifest.real_porep_bytes,
-                    tail_filler_bytes=manifest.tail_filler_bytes,
-                    region_manifest_json=region_manifest_to_json(manifest),
-                )
-            ],
+        return session_pb2.MaterializeLabelsResponse(
+            regions=regions,
             timings_ms={
+                "label_generation": label_generation_ms,
                 "copy_to_host": copy_to_host_ms,
                 "copy_to_hbm": copy_to_hbm_ms,
-                "object_serialization": object_serialization_ms,
-                "outer_tree_build": outer_tree_build_ms,
+                "stage_buffer_cleanup": stage_buffer_cleanup_ms,
             },
+            graph_descriptor_digest=state.graph.graph_descriptor_digest,
+            scratch_peak_bytes=scratch_peak_bytes,
         )
 
-    def CommitRegions(
+    def PrepareFastPhase(
         self,
-        request: session_pb2.CommitRegionsRequest,
+        request: session_pb2.PrepareFastPhaseRequest,
         context: grpc.ServicerContext,
-    ) -> session_pb2.CommitRegionsResponse:
-        try:
-            self._require_protocol_version(request.protocol_version)
-            state = self._session(request.session_id)
-            if not state.region_manifests:
-                raise ProtocolError("MaterializeRegionPayloads must run before CommitRegions.")
-        except Exception as error:  # pragma: no cover - grpc abort
-            self._abort(context, error)
-        return session_pb2.CommitRegionsResponse(accepted=True)
-
-    def VerifyInnerProofs(
-        self,
-        request: session_pb2.VerifyInnerProofsRequest,
-        context: grpc.ServicerContext,
-    ) -> session_pb2.VerifyInnerProofsResponse:
-        try:
-            self._require_protocol_version(request.protocol_version)
-            self._session(request.session_id)
-        except Exception as error:  # pragma: no cover - grpc abort
-            self._abort(context, error)
-        return session_pb2.VerifyInnerProofsResponse(accepted=True)
-
-    def ChallengeOuter(
-        self,
-        request: session_pb2.ChallengeOuterRequest,
-        context: grpc.ServicerContext,
-    ) -> session_pb2.ChallengeOuterResponse:
+    ) -> session_pb2.PrepareFastPhaseResponse:
         try:
             self._require_protocol_version(request.protocol_version)
             state = self._session(request.session_id)
             self._require_not_expired(state)
-            challenge = request.challenges[0]
-            attachment = state.attachments.get(challenge.region_id)
-            commitment = state.commitments.get(challenge.region_id)
-            manifest = state.region_manifests.get(challenge.region_id)
-            if attachment is None or manifest is None or commitment is None:
-                raise ProtocolError(
-                    "MaterializeRegionPayloads must run before ChallengeOuter."
+            if not state.materialized:
+                raise ProtocolError("MaterializeLabels must run before PrepareFastPhase.")
+        except Exception as error:  # pragma: no cover - grpc abort
+            self._abort(context, error)
+        return session_pb2.PrepareFastPhaseResponse(accepted=True)
+
+    def RunFastPhase(
+        self,
+        request: session_pb2.RunFastPhaseRequest,
+        context: grpc.ServicerContext,
+    ) -> session_pb2.RunFastPhaseResponse:
+        try:
+            if len(request.rounds) != 1:
+                raise ProtocolError("RunFastPhase must carry exactly one challenge per request.")
+            responses: list[session_pb2.FastRoundResponse] = []
+            for round_request in request.rounds:
+                self._require_protocol_version(round_request.protocol_version)
+                state = self._session(round_request.session_id)
+                self._require_not_expired(state)
+                if not state.materialized:
+                    raise ProtocolError("MaterializeLabels must run before RunFastPhase.")
+                region_id, local_slot_index = self._resolve_slot(state, int(round_request.challenge_index))
+                attachment = state.attachments.get(region_id)
+                if attachment is None:
+                    raise ProtocolError("MaterializeLabels must run before RunFastPhase.")
+                label_width_bytes = state.plan.label_width_bits // 8
+                round_started = perf_counter()
+                label_bytes = attachment.read(
+                    length=label_width_bytes,
+                    offset=local_slot_index * label_width_bytes,
                 )
-            response_started = perf_counter()
-            openings = []
-            for index in challenge.leaf_indices:
-                leaf = attachment.read_leaf(int(index), manifest.leaf_size)
-                opening = commitment.opening(int(index), leaf)
-                openings.append(
-                    session_pb2.OuterOpening(
-                        region_id=challenge.region_id,
-                        session_manifest_root=challenge.session_manifest_root,
-                        leaf_index=int(index),
-                        leaf_bytes=leaf,
-                        auth_path=list(opening.sibling_hashes),
+                round_trip_us = int((perf_counter() - round_started) * 1_000_000)
+                responses.append(
+                    session_pb2.FastRoundResponse(
+                        region_id=region_id,
+                        challenge_index=int(round_request.challenge_index),
+                        label_bytes=label_bytes,
+                        round_trip_us=round_trip_us,
                     )
                 )
-            response_ms = int((perf_counter() - response_started) * 1000)
         except Exception as error:  # pragma: no cover - grpc abort
             self._abort(context, error)
-        return session_pb2.ChallengeOuterResponse(openings=openings, response_ms=response_ms)
-
-    def VerifyOuter(
-        self,
-        request: session_pb2.VerifyOuterRequest,
-        context: grpc.ServicerContext,
-    ) -> session_pb2.VerifyOuterResponse:
-        try:
-            self._require_protocol_version(request.protocol_version)
-            self._session(request.session_id)
-        except Exception as error:  # pragma: no cover - grpc abort
-            self._abort(context, error)
-        return session_pb2.VerifyOuterResponse(accepted=True)
+        return session_pb2.RunFastPhaseResponse(responses=responses)
 
     def Finalize(
         self,

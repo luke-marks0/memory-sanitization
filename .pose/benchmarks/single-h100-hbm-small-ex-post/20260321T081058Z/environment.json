@@ -1,0 +1,10 @@
+{
+  "cargo": "/root/.cargo/bin/cargo",
+  "head_commit": "4bda585fd5595c21b990fd8b5849a9fc4e70ca3f",
+  "head_status": "M bench_profiles/dev-small.yaml\n M bench_profiles/eight-h100-hbm-max.yaml\n M bench_profiles/eight-h100-hybrid-max.yaml\n M bench_profiles/single-h100-hbm-max.yaml\n M bench_profiles/single-h100-host-max.yaml\n M bench_profiles/single-h100-hybrid-max.yaml\n M docs/repository-spec.md\n M proto/pose/v1/session.proto\n M rust/pose_filecoin_bridge/src/lib.rs\n M src/pose/benchmarks/profiles.py\n M src/pose/benchmarks/summarize.py\n M src/pose/cli/verifier.py\n M src/pose/common/timing.py\n M src/pose/filecoin/reference.py\n M src/pose/protocol/grpc_codec.py\n M src/pose/protocol/messages.py\n M src/pose/protocol/region_payloads.py\n M src/pose/protocol/result_schema.py\n M src/pose/prover/grpc_service.py\n M src/pose/v1/session_pb2.py\n M src/pose/v1/session_pb2_grpc.py\n M src/pose/verifier/gpu_planning.py\n M src/pose/verifier/grpc_client.py\n M src/pose/verifier/grpc_gpu_session.py\n M src/pose/verifier/grpc_host_session.py\n M src/pose/verifier/host_planning.py\n M src/pose/verifier/service.py\n M tests/e2e/test_real_filecoin_bridge.py\n?? .pose/benchmarks/dev-small-ex-post/\n?? .pose/benchmarks/dev-small/20260321T080956Z/\n?? .pose/benchmarks/single-h100-hbm-small-ex-post/\n?? .pose/benchmarks/single-h100-hbm-small/\n?? bench_profiles/dev-small-ex-post.yaml\n?? bench_profiles/single-h100-hbm-small-ex-post.yaml\n?? bench_profiles/single-h100-hbm-small.yaml\n?? docs/.ex-post-c2-proposal.md.swp\n?? docs/ex-post-c2-proposal.md\n?? src/pose/filecoin/porep_witness_unit.py\n?? src/pose/verifier/inner_artifacts.py\n?? tests/unit/test_grpc_host_session_ex_post.py\n?? tests/unit/test_porep_witness_unit.py",
+  "platform": "Linux-6.8.0-1045-gcp-x86_64-with-glibc2.39",
+  "python_executable": "/workspace/memory-sanitization/.venv/bin/python3",
+  "python_version": "3.12.13",
+  "rust_toolchain": "[toolchain]\nchannel = \"1.93.1\"\ncomponents = [\"clippy\", \"rustfmt\"]\nprofile = \"minimal\"\n",
+  "uv": "/usr/local/bin/uv"
+}

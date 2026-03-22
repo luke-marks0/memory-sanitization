@@ -271,10 +271,18 @@ class GpuLease:
             raise ResourceFailure(
                 f"Payload length {len(payload)} exceeds gpu lease size {self.record.usable_bytes}"
             )
-        self.runtime.copy_host_to_device(self.device, self.pointer, payload)
+        self.write_at(payload, offset=0)
         remaining = self.record.usable_bytes - len(payload)
         if remaining:
             self._zero_range(len(payload), remaining)
+
+    def write_at(self, payload: bytes, *, offset: int) -> None:
+        if offset < 0 or offset + len(payload) > self.record.usable_bytes:
+            raise ResourceFailure(
+                f"Invalid gpu lease write offset={offset} length={len(payload)} "
+                f"for size {self.record.usable_bytes}"
+            )
+        self.runtime.copy_host_to_device(self.device, self.pointer, payload, offset=offset)
 
     def read(self, length: int | None = None, offset: int = 0) -> bytes:
         requested = self.record.usable_bytes if length is None else length
@@ -341,10 +349,18 @@ class GpuLeaseAttachment:
             raise ResourceFailure(
                 f"Payload length {len(payload)} exceeds gpu attachment size {self.usable_bytes}"
             )
-        self.runtime.copy_host_to_device(self.device, self.pointer, payload)
+        self.write_at(payload, offset=0)
         remaining = self.usable_bytes - len(payload)
         if remaining:
             self.zeroize(offset=len(payload), length=remaining)
+
+    def write_at(self, payload: bytes, *, offset: int) -> None:
+        if offset < 0 or offset + len(payload) > self.usable_bytes:
+            raise ResourceFailure(
+                f"Invalid gpu attachment write offset={offset} length={len(payload)} "
+                f"for size {self.usable_bytes}"
+            )
+        self.runtime.copy_host_to_device(self.device, self.pointer, payload, offset=offset)
 
     def read(self, length: int | None = None, offset: int = 0) -> bytes:
         requested = self.usable_bytes if length is None else length

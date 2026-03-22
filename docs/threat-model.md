@@ -2,57 +2,65 @@
 
 ## Security Claim
 
-A session succeeds only when the prover both:
+A successful session means the prover answered timed PoSE-DB challenge rounds
+for labels derived from the verifier's session seed and the active graph
+descriptor, under the declared attacker-budget assumption.
 
-- demonstrates a real Filecoin PoRep accepted by the official verification
-  path; and
-- demonstrates timely possession of the canonical serialized PoRep bytes inside
-  the verifier-leased host or HBM regions.
+Operationally, the repository may also report which verifier-leased host/HBM
+regions held the canonical slot layout for those labels.
 
 ## Attacker Model
 
-The prover may be adversarial and may attempt to:
+The prover may be adversarial and may coordinate with an external conspirator.
+It may attempt to:
 
-- replay an old but valid inner proof under a new session;
-- store a different object than the claimed PoRep bytes;
-- keep the object outside the challenged region and answer leaves on demand;
-- partially overwrite the region or sparsely populate it;
-- exploit transport ambiguity, stale manifests, or stale lease handles;
-- answer after an excessive delay that hides reconstruction or copy costs.
+- store only part of the label set and recompute missing labels on demand;
+- keep labels outside the challenged regions and answer from another local tier;
+- use hidden host, HBM, pinned, or managed-memory shadows;
+- sparsely populate the challenged regions;
+- replay stale session seeds or stale label state;
+- exploit message ambiguity, stale handles, or transport jitter;
+- answer late in a way that hides recomputation or copy-in cost.
+
+## Distant-Attacker Interpretation
+
+The repository follows the paper's distant-attacker interpretation:
+
+- assistance may happen before and between fast rounds;
+- only local prover state is relevant during a timed round;
+- deadlines and calibrated `q` must make within-round recomputation implausible.
 
 ## Trusted Components
 
 The trusted computing base includes:
 
 - the verifier process;
-- the host kernel and the region-leasing primitives it uses;
-- the vendored Filecoin reference implementation;
-- the Rust bridge surface;
-- the Python verifier implementation;
+- the operating system kernel;
+- memory-sharing and lease primitives;
+- the Python reference graph and label semantics;
+- any enabled native accelerators;
+- the selected hash backend;
 - CUDA runtime and NVIDIA driver behavior in HBM mode;
-- the cryptographic hashing used for the outer proof.
+- verifier timing instrumentation.
 
 ## Explicit Non-Goals
 
 The repository does not claim:
 
-- kernel, firmware, or device-wide erasure;
-- erasure of inaccessible memory;
-- protection against a malicious kernel or driver stack;
+- kernel-level or firmware-level erasure;
+- inaccessible or privileged memory coverage;
 - disk or remote-storage erasure;
-- blockchain integration.
+- protection against a malicious kernel, driver, or device firmware;
+- secure-hardware attestation.
 
 ## Timing Assumption
 
-Deadline policies rely on an operational assumption:
+The fast phase relies on the assumption that reading already resident labels is
+materially cheaper than recomputing or copying them into place after challenge.
 
-- reading and proving bytes already resident in the challenged region must be
-  materially cheaper than reconstructing them or copying them in after the
-  challenge arrives.
+Calibration and benchmarking must therefore preserve evidence for:
 
-Benchmarking must therefore preserve separate measurements for:
-
-- resident challenge response;
-- copy-in from alternate storage;
-- reconstruction or rematerialization.
-
+- resident lookup latency;
+- local hash throughput;
+- transport overhead;
+- alternate-store copy timing where relevant.

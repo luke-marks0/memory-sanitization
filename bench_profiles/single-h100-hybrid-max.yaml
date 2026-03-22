@@ -8,17 +8,28 @@ reserve_policy:
   per_gpu_bytes: 2147483648
 host_target_fraction: 0.85
 per_gpu_target_fraction: 0.9
-porep_unit_profile: full-cache
-leaf_size: 1048576
+w_bits: 256
+graph_family: pose-db-drg-v1
+hash_backend: blake3-xof
+adversary_model: general
+attacker_budget_bytes_assumed: 33554432
 challenge_policy:
-  epsilon: 0.01
-  lambda_bits: 64
-  max_challenges: 1536
+  rounds_r: 1536
+  target_success_bound: 1.0e-9
+  sample_with_replacement: true
 deadline_policy:
-  response_deadline_ms: 2200
+  response_deadline_us: 2200
   session_timeout_ms: 1800000
+calibration_policy:
+  lookup_samples: 1024
+  hash_measurement_rounds: 3
+  hashes_per_round: 4096
+  transport_overhead_us: 220
+  serialization_overhead_us: 110
+  safety_margin_fraction: 0.25
 cleanup_policy:
   zeroize: true
   verify_zeroization: false
 repetition_count: 3
-
+transport_mode: grpc
+coverage_threshold: 0.9

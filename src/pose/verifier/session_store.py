@@ -82,24 +82,34 @@ def load_plan_file(path: Path) -> PlanFile:
 class ResidentSessionRecord:
     session_id: str
     profile_name: str
-    session_nonce: str
+    session_seed_hex: str
     session_plan_root: str
-    session_manifest_root: str
+    graph_family: str
+    graph_parameter_n: int
+    graph_descriptor_digest: str
+    label_width_bits: int
+    label_count_m: int
+    gamma: int
+    hash_backend: str
     region_id: str
-    region_root_hex: str
-    region_manifest_root: str
-    challenge_leaf_size: int
-    challenge_policy: dict[str, int | float]
-    deadline_ms: int
+    region_slot_count: int
+    challenge_policy: dict[str, int | float | bool]
+    deadline_us: int
     cleanup_policy: dict[str, bool]
+    adversary_model: str
+    attacker_budget_bytes_assumed: int
+    q_bound: int
     host_total_bytes: int
     host_usable_bytes: int
     host_covered_bytes: int
-    real_porep_bytes: int
-    tail_filler_bytes: int
-    real_porep_ratio: float
+    covered_bytes: int
+    slack_bytes: int
     coverage_fraction: float
-    inner_filecoin_verified: bool
+    scratch_peak_bytes: int
+    declared_stage_copy_bytes: int
+    formal_claim_notes: list[str]
+    operational_claim_notes: list[str]
+    claim_notes: list[str]
     socket_path: str
     process_id: int
     lease_expiry: str
@@ -112,24 +122,34 @@ class ResidentSessionRecord:
         return cls(
             session_id=str(payload["session_id"]),
             profile_name=str(payload["profile_name"]),
-            session_nonce=str(payload["session_nonce"]),
+            session_seed_hex=str(payload["session_seed_hex"]),
             session_plan_root=str(payload["session_plan_root"]),
-            session_manifest_root=str(payload["session_manifest_root"]),
+            graph_family=str(payload["graph_family"]),
+            graph_parameter_n=int(payload["graph_parameter_n"]),
+            graph_descriptor_digest=str(payload["graph_descriptor_digest"]),
+            label_width_bits=int(payload["label_width_bits"]),
+            label_count_m=int(payload["label_count_m"]),
+            gamma=int(payload["gamma"]),
+            hash_backend=str(payload["hash_backend"]),
             region_id=str(payload["region_id"]),
-            region_root_hex=str(payload["region_root_hex"]),
-            region_manifest_root=str(payload["region_manifest_root"]),
-            challenge_leaf_size=int(payload["challenge_leaf_size"]),
+            region_slot_count=int(payload["region_slot_count"]),
             challenge_policy=dict(payload["challenge_policy"]),
-            deadline_ms=int(payload["deadline_ms"]),
+            deadline_us=int(payload["deadline_us"]),
             cleanup_policy={key: bool(value) for key, value in dict(payload["cleanup_policy"]).items()},
+            adversary_model=str(payload["adversary_model"]),
+            attacker_budget_bytes_assumed=int(payload["attacker_budget_bytes_assumed"]),
+            q_bound=int(payload["q_bound"]),
             host_total_bytes=int(payload["host_total_bytes"]),
             host_usable_bytes=int(payload["host_usable_bytes"]),
             host_covered_bytes=int(payload["host_covered_bytes"]),
-            real_porep_bytes=int(payload["real_porep_bytes"]),
-            tail_filler_bytes=int(payload["tail_filler_bytes"]),
-            real_porep_ratio=float(payload["real_porep_ratio"]),
+            covered_bytes=int(payload["covered_bytes"]),
+            slack_bytes=int(payload["slack_bytes"]),
             coverage_fraction=float(payload["coverage_fraction"]),
-            inner_filecoin_verified=bool(payload["inner_filecoin_verified"]),
+            scratch_peak_bytes=int(payload.get("scratch_peak_bytes", 0)),
+            declared_stage_copy_bytes=int(payload.get("declared_stage_copy_bytes", 0)),
+            formal_claim_notes=[str(item) for item in payload.get("formal_claim_notes", [])],
+            operational_claim_notes=[str(item) for item in payload.get("operational_claim_notes", [])],
+            claim_notes=[str(item) for item in payload.get("claim_notes", [])],
             socket_path=str(payload["socket_path"]),
             process_id=int(payload["process_id"]),
             lease_expiry=str(payload["lease_expiry"]),

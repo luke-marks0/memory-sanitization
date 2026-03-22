@@ -4,11 +4,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 BANNED_SHORTCUT_PATTERNS = (
-    "fauxrep",
-    "fauxrep2",
-    "fauxrep_aux",
-    "synthetic-porep",
-    "window-post-fake",
+    "external_response_table",
+    "fast_phase_response_cache",
+    "untimed_fast_phase",
+    "post_hoc_fast_phase",
+    "toy_depth_robust_graph",
+    "managed_memory_fallback",
+    "unified_memory_fallback",
+    "compressed_label_cache",
+    "hidden_stage_copy",
+    "recompute_on_demand_label",
 )
 
 
@@ -21,10 +26,7 @@ class BannedShortcutMatch:
 
 
 def production_scan_roots(repo_root: Path) -> tuple[Path, ...]:
-    return (
-        repo_root / "src" / "pose",
-        repo_root / "rust" / "pose_filecoin_bridge",
-    )
+    return (repo_root / "src" / "pose",)
 
 
 def excluded_scan_files(repo_root: Path) -> set[Path]:

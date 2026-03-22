@@ -1,0 +1,1 @@
+run=001 session_id=2026-03-22T08:59:26Z-4b15e80a verdict=SUCCESS success=true coverage_fraction=1.000000 q_bound=754 gamma=2048 reported_success_bound=5.528234417686065e-56 max_round_trip_us=18 fast_phase_ms=4 total_ms=16709 verifier_cpu_ms=8394

@@ -2,12 +2,12 @@
 
 ## Verdicts
 
-Verifier results must use one of the stable verdicts defined by the spec:
+The target stable verdict set is:
 
 - `SUCCESS`
-- `INNER_PROOF_INVALID`
-- `OUTER_PROOF_INVALID`
-- `TIMEOUT`
+- `WRONG_RESPONSE`
+- `DEADLINE_MISS`
+- `CALIBRATION_INVALID`
 - `COVERAGE_BELOW_THRESHOLD`
 - `RESOURCE_FAILURE`
 - `CLEANUP_FAILURE`
@@ -15,37 +15,74 @@ Verifier results must use one of the stable verdicts defined by the spec:
 
 ## Required Fields
 
-The canonical result artifact must include at least:
+The canonical result artifact is the full serialized `SessionResult` object.
+`pose verifier verify-record` treats that schema strictly: every field emitted by
+the repository is required, even when its value is empty or zero.
 
-- session identity and profile name;
-- run class, session plan root, and session manifest root;
-- host total, usable, and covered bytes;
-- GPU device list and per-device usable plus covered bytes;
-- `real_porep_bytes`, `tail_filler_bytes`, and `real_porep_ratio`;
-- `coverage_fraction`;
-- inner and outer verification status;
-- challenge leaf size, count, deadline, and response time;
-- cleanup status;
-- artifact path and, for retained sessions, the resident prover endpoint plus
-  lease expiry;
-- per-phase timings;
-- environment metadata.
+The required fields are:
 
-## Timing Keys
+- `success`
+- `verdict`
+- `session_id`
+- `profile_name`
+- `graph_family`
+- `graph_parameter_n`
+- `graph_descriptor_digest`
+- `label_width_bits`
+- `label_count_m`
+- `gamma`
+- `hash_backend`
+- `run_class`
+- `session_seed_commitment`
+- `artifact_path`
+- `resident_socket_path`
+- `resident_process_id`
+- `lease_expiry`
+- `adversary_model`
+- `attacker_budget_bytes_assumed`
+- `target_success_bound`
+- `reported_success_bound`
+- `soundness_model`
+- `deadline_us`
+- `q_bound`
+- `rounds_r`
+- `accepted_rounds`
+- `host_total_bytes`
+- `host_usable_bytes`
+- `host_covered_bytes`
+- `gpu_devices`
+- `gpu_usable_bytes_by_device`
+- `gpu_covered_bytes_by_device`
+- `covered_bytes`
+- `slack_bytes`
+- `coverage_fraction`
+- `scratch_peak_bytes`
+- `declared_stage_copy_bytes`
+- `round_trip_p50_us`
+- `round_trip_p95_us`
+- `round_trip_p99_us`
+- `max_round_trip_us`
+- `cleanup_status`
+- `formal_claim_notes`
+- `operational_claim_notes`
+- `claim_notes`
+- `timings_ms`
+- `environment`
+- `notes`
 
-The timing map must carry stable keys for:
+## Timing Breakdown
 
-- discovery and region leasing;
-- allocation and data generation;
-- all inner proof phases;
-- serialization and copy operations;
-- outer tree build and outer verification;
-- challenge response;
+The timing artifact should cover at least:
+
+- discovery;
+- region leasing and allocation;
+- graph construction;
+- challenge schedule preparation;
+- expected-response preparation;
+- label generation;
+- copy to host/HBM where applicable;
+- stage-buffer cleanup;
+- fast-phase total;
+- verifier check total;
 - cleanup;
 - total runtime.
-
-## Current Status
-
-The Python module `src/pose/protocol/result_schema.py` defines the current
-Phase 1 result schema and validation helpers. Later phases may extend behavior
-without breaking the required field names or verdict set.

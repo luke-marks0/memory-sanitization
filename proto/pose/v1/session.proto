@@ -6,12 +6,10 @@ service PoseSessionService {
   rpc Discover(DiscoverRequest) returns (DiscoverResponse);
   rpc PlanSession(PlanSessionRequest) returns (PlanSessionResponse);
   rpc LeaseRegions(LeaseRegionsRequest) returns (LeaseRegionsResponse);
-  rpc GenerateInnerPoRep(GenerateInnerPoRepRequest) returns (GenerateInnerPoRepResponse);
-  rpc MaterializeRegionPayloads(MaterializeRegionPayloadsRequest) returns (MaterializeRegionPayloadsResponse);
-  rpc CommitRegions(CommitRegionsRequest) returns (CommitRegionsResponse);
-  rpc VerifyInnerProofs(VerifyInnerProofsRequest) returns (VerifyInnerProofsResponse);
-  rpc ChallengeOuter(ChallengeOuterRequest) returns (ChallengeOuterResponse);
-  rpc VerifyOuter(VerifyOuterRequest) returns (VerifyOuterResponse);
+  rpc SeedSession(SeedSessionRequest) returns (SeedSessionResponse);
+  rpc MaterializeLabels(MaterializeLabelsRequest) returns (MaterializeLabelsResponse);
+  rpc PrepareFastPhase(PrepareFastPhaseRequest) returns (PrepareFastPhaseResponse);
+  rpc RunFastPhase(RunFastPhaseRequest) returns (RunFastPhaseResponse);
   rpc Finalize(FinalizeRequest) returns (FinalizeResponse);
   rpc Cleanup(CleanupRequest) returns (CleanupResponse);
 }
@@ -31,13 +29,13 @@ message PlanSessionRequest {
 }
 
 message ChallengePolicy {
-  double epsilon = 1;
-  uint32 lambda_bits = 2;
-  uint32 max_challenges = 3;
+  uint32 rounds_r = 1;
+  double target_success_bound = 2;
+  bool sample_with_replacement = 3;
 }
 
 message DeadlinePolicy {
-  uint32 response_deadline_ms = 1;
+  uint32 response_deadline_us = 1;
   uint32 session_timeout_ms = 2;
 }
 
@@ -50,33 +48,31 @@ message RegionPlan {
   string region_id = 1;
   string region_type = 2;
   uint64 usable_bytes = 3;
-  uint32 gpu_device = 4;
-}
-
-message SectorPlanEntry {
-  string region_id = 1;
-  uint32 unit_index = 2;
-  string piece_bytes_hex = 3;
-  string prover_id_hex = 4;
-  uint64 sector_id = 5;
-  string ticket_hex = 6;
-  string seed_hex = 7;
-  string porep_id_hex = 8;
-  bool verify_after_seal = 9;
+  uint64 slot_count = 4;
+  uint64 covered_bytes = 5;
+  uint64 slack_bytes = 6;
+  uint32 gpu_device = 7;
 }
 
 message SessionPlan {
   string session_id = 1;
-  string nonce = 2;
+  string session_seed_hex = 2;
   string profile_name = 3;
-  string porep_unit_profile = 4;
-  uint32 challenge_leaf_size = 5;
+  string graph_family = 4;
+  uint32 graph_parameter_n = 5;
   ChallengePolicy challenge_policy = 6;
   DeadlinePolicy deadline_policy = 7;
   CleanupPolicy cleanup_policy = 8;
-  uint32 unit_count = 9;
+  uint64 label_count_m = 9;
   repeated RegionPlan regions = 10;
-  repeated SectorPlanEntry sector_plan = 11;
+  uint64 gamma = 11;
+  uint32 label_width_bits = 12;
+  string hash_backend = 13;
+  string graph_descriptor_digest = 14;
+  string adversary_model = 15;
+  uint64 attacker_budget_bytes_assumed = 16;
+  uint64 q_bound = 17;
+  repeated string claim_notes = 18;
 }
 
 message PlanSessionResponse {
@@ -95,9 +91,12 @@ message LeaseRecord {
   string region_id = 1;
   string region_type = 2;
   uint64 usable_bytes = 3;
-  string lease_handle = 4;
-  string lease_expiry = 5;
-  CleanupPolicy cleanup_policy = 6;
+  uint64 slot_count = 4;
+  uint64 slack_bytes = 5;
+  string lease_handle = 6;
+  string lease_expiry = 7;
+  CleanupPolicy cleanup_policy = 8;
+  uint32 gpu_device = 9;
 }
 
 message LeaseRegionsResponse {
@@ -105,94 +104,66 @@ message LeaseRegionsResponse {
   repeated string notes = 2;
 }
 
-message GenerateInnerPoRepRequest {
+message SeedSessionRequest {
   string protocol_version = 1;
   string session_id = 2;
 }
 
-message InnerProofArtifact {
-  string region_id = 1;
-  string artifact_json = 2;
-}
-
-message GenerateInnerPoRepResponse {
-  repeated InnerProofArtifact artifacts = 1;
+message SeedSessionResponse {
+  bool accepted = 1;
   repeated string notes = 2;
 }
 
-message MaterializeRegionPayloadsRequest {
+message MaterializeLabelsRequest {
   string protocol_version = 1;
   string session_id = 2;
 }
 
-message RegionCommitment {
+message RegionMaterialization {
   string region_id = 1;
-  string region_root_hex = 2;
-  uint64 covered_bytes = 3;
-  uint64 real_porep_bytes = 4;
-  uint64 tail_filler_bytes = 5;
-  string region_manifest_json = 6;
+  uint64 covered_bytes = 2;
+  uint64 slack_bytes = 3;
+  uint64 declared_stage_copy_bytes = 4;
 }
 
-message MaterializeRegionPayloadsResponse {
-  repeated RegionCommitment commitments = 1;
+message MaterializeLabelsResponse {
+  repeated RegionMaterialization regions = 1;
   map<string, uint32> timings_ms = 2;
   repeated string notes = 3;
+  string graph_descriptor_digest = 4;
+  uint64 scratch_peak_bytes = 5;
 }
 
-message CommitRegionsRequest {
+message PrepareFastPhaseRequest {
   string protocol_version = 1;
   string session_id = 2;
 }
 
-message CommitRegionsResponse {
+message PrepareFastPhaseResponse {
   bool accepted = 1;
   repeated string notes = 2;
 }
 
-message VerifyInnerProofsRequest {
+message FastRoundChallenge {
   string protocol_version = 1;
   string session_id = 2;
+  uint32 round_index = 3;
+  uint64 challenge_index = 4;
 }
 
-message VerifyInnerProofsResponse {
-  bool accepted = 1;
-  repeated string notes = 2;
-}
-
-message OuterChallenge {
+message FastRoundResponse {
   string region_id = 1;
-  repeated uint64 leaf_indices = 2;
-  string session_manifest_root = 3;
+  uint64 challenge_index = 2;
+  bytes label_bytes = 3;
+  uint32 round_trip_us = 4;
 }
 
-message ChallengeOuterRequest {
-  string protocol_version = 1;
-  string session_id = 2;
-  repeated OuterChallenge challenges = 3;
+message RunFastPhaseRequest {
+  repeated FastRoundChallenge rounds = 1;
 }
 
-message OuterOpening {
-  string region_id = 1;
-  string session_manifest_root = 2;
-  uint64 leaf_index = 3;
-  bytes leaf_bytes = 4;
-  repeated bytes auth_path = 5;
-}
-
-message ChallengeOuterResponse {
-  repeated OuterOpening openings = 1;
-  uint32 response_ms = 2;
-  repeated string notes = 3;
-}
-
-message VerifyOuterRequest {
-  string protocol_version = 1;
-  string session_id = 2;
-}
-
-message VerifyOuterResponse {
-  bool accepted = 1;
+message RunFastPhaseResponse {
+  repeated FastRoundResponse responses = 1;
   repeated string notes = 2;
 }
 

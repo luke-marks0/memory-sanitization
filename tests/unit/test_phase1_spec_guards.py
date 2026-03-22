@@ -7,11 +7,10 @@ from pathlib import Path
 import grpc
 import pytest
 
+from pose.graphs import build_graph_descriptor
 from pose.protocol.grpc_codec import GRPC_PROTOCOL_VERSION, session_plan_to_proto
 from pose.protocol.messages import ChallengePolicy, CleanupPolicy, DeadlinePolicy, RegionPlan, SessionPlan
-from pose.protocol.region_payloads import RegionManifest, SessionManifest
 from pose.prover.grpc_service import PoseSessionServicer
-from pose.verifier.host_planning import build_host_sector_plan
 from pose.v1 import session_pb2
 
 
@@ -27,6 +26,49 @@ def _package_imports(package_name: str) -> list[tuple[Path, str]]:
             elif isinstance(node, ast.ImportFrom) and node.module is not None:
                 imports.append((path, node.module))
     return imports
+
+
+def _session_plan(session_id: str = "session-id") -> SessionPlan:
+    descriptor = build_graph_descriptor(
+        label_count_m=8,
+        graph_parameter_n=2,
+        gamma=4,
+        hash_backend="blake3-xof",
+        label_width_bits=256,
+    )
+    return SessionPlan(
+        session_id=session_id,
+        session_seed_hex="ab" * 32,
+        profile_name="dev-small",
+        graph_family="pose-db-drg-v1",
+        graph_parameter_n=2,
+        label_count_m=8,
+        gamma=4,
+        label_width_bits=256,
+        hash_backend="blake3-xof",
+        graph_descriptor_digest=descriptor.digest,
+        challenge_policy=ChallengePolicy(
+            rounds_r=4,
+            target_success_bound=1e-9,
+            sample_with_replacement=True,
+        ),
+        deadline_policy=DeadlinePolicy(response_deadline_us=50_000, session_timeout_ms=60_000),
+        cleanup_policy=CleanupPolicy(zeroize=True, verify_zeroization=False),
+        regions=[
+            RegionPlan(
+                region_id="host-0",
+                region_type="host",
+                usable_bytes=256,
+                slot_count=8,
+                covered_bytes=256,
+                slack_bytes=0,
+            )
+        ],
+        adversary_model="general",
+        attacker_budget_bytes_assumed=4096,
+        q_bound=3,
+        claim_notes=["unit-test"],
+    )
 
 
 def test_verifier_package_has_no_prover_imports() -> None:
@@ -47,60 +89,14 @@ def test_prover_package_has_no_verifier_imports() -> None:
     assert offending == []
 
 
-def test_session_manifest_root_changes_when_session_timeout_changes() -> None:
-    region_manifest = RegionManifest(
-        region_id="host-0",
-        region_type="host",
-        usable_bytes=4096,
-        leaf_size=4096,
-        payload_length_bytes=4096,
-        real_porep_bytes=4096,
-        tail_filler_bytes=0,
-        unit_count=1,
-        unit_digests_hex=("00" * 32,),
-        payload_sha256_hex="11" * 32,
-        merkle_root_hex="22" * 32,
-    )
-    baseline = SessionManifest(
-        session_id="session-id",
-        nonce="session-nonce",
-        profile_name="dev-small",
-        payload_profile="minimal",
-        leaf_size=4096,
-        deadline_policy={"response_deadline_ms": 5000, "session_timeout_ms": 60000},
-        challenge_policy={"epsilon": 0.01, "lambda_bits": 32, "max_challenges": 64},
-        cleanup_policy={"zeroize": True, "verify_zeroization": False},
-        region_manifests=(region_manifest,),
-    )
+def test_session_plan_root_changes_when_deadline_policy_changes() -> None:
+    baseline = _session_plan()
     updated = replace(
         baseline,
-        deadline_policy={"response_deadline_ms": 5000, "session_timeout_ms": 61000},
+        deadline_policy=DeadlinePolicy(response_deadline_us=60_000, session_timeout_ms=60_000),
     )
 
     assert "deadline_policy" in baseline.to_cbor_object()
-    assert baseline.manifest_root_hex != updated.manifest_root_hex
-
-
-def test_session_plan_root_changes_when_sector_plan_changes() -> None:
-    baseline = SessionPlan(
-        session_id="session-id",
-        nonce="session-nonce",
-        profile_name="dev-small",
-        porep_unit_profile="minimal",
-        challenge_leaf_size=4096,
-        challenge_policy=ChallengePolicy(epsilon=0.01, lambda_bits=32, max_challenges=64),
-        deadline_policy=DeadlinePolicy(response_deadline_ms=5000, session_timeout_ms=60000),
-        cleanup_policy=CleanupPolicy(zeroize=True, verify_zeroization=False),
-        unit_count=1,
-        regions=[RegionPlan(region_id="host-0", region_type="host", usable_bytes=4096)],
-        sector_plan=build_host_sector_plan("session-id", "host-0", 1),
-    )
-    updated = replace(
-        baseline,
-        sector_plan=build_host_sector_plan("session-id-2", "host-0", 1),
-    )
-
-    assert "sector_plan" in baseline.to_cbor_object()
     assert baseline.plan_root_hex != updated.plan_root_hex
 
 
@@ -116,27 +112,9 @@ class _FakeContext:
         raise _AbortCalled(code, details)
 
 
-def test_grpc_plan_session_rejects_duplicate_session_ids(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        "pose.prover.grpc_service.VendoredFilecoinReference",
-        lambda: object(),
-    )
+def test_grpc_plan_session_rejects_duplicate_session_ids() -> None:
     servicer = PoseSessionServicer()
-    plan = SessionPlan(
-        session_id="duplicate-session",
-        nonce="nonce",
-        profile_name="dev-small",
-        porep_unit_profile="minimal",
-        challenge_leaf_size=4096,
-        challenge_policy=ChallengePolicy(epsilon=0.01, lambda_bits=32, max_challenges=64),
-        deadline_policy=DeadlinePolicy(response_deadline_ms=5000, session_timeout_ms=60000),
-        cleanup_policy=CleanupPolicy(zeroize=True, verify_zeroization=False),
-        unit_count=1,
-        regions=[RegionPlan(region_id="host-0", region_type="host", usable_bytes=4096)],
-        sector_plan=build_host_sector_plan("duplicate-session", "host-0", 1),
-    )
+    plan = _session_plan(session_id="duplicate-session")
     request = session_pb2.PlanSessionRequest(
         protocol_version=GRPC_PROTOCOL_VERSION,
         plan=session_plan_to_proto(plan),
@@ -152,33 +130,16 @@ def test_grpc_plan_session_rejects_duplicate_session_ids(
     assert "Duplicate session id" in error.value.details
 
 
-def test_grpc_plan_session_rejects_missing_sector_plan(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        "pose.prover.grpc_service.VendoredFilecoinReference",
-        lambda: object(),
-    )
+def test_grpc_plan_session_rejects_inconsistent_region_geometry() -> None:
     servicer = PoseSessionServicer()
-    plan = SessionPlan(
-        session_id="missing-sector-plan",
-        nonce="nonce",
-        profile_name="dev-small",
-        porep_unit_profile="minimal",
-        challenge_leaf_size=4096,
-        challenge_policy=ChallengePolicy(epsilon=0.01, lambda_bits=32, max_challenges=64),
-        deadline_policy=DeadlinePolicy(response_deadline_ms=5000, session_timeout_ms=60000),
-        cleanup_policy=CleanupPolicy(zeroize=True, verify_zeroization=False),
-        unit_count=1,
-        regions=[RegionPlan(region_id="host-0", region_type="host", usable_bytes=4096)],
-    )
+    invalid_region = replace(_session_plan().regions[0], covered_bytes=224, slack_bytes=32)
     request = session_pb2.PlanSessionRequest(
         protocol_version=GRPC_PROTOCOL_VERSION,
-        plan=session_plan_to_proto(plan),
+        plan=session_plan_to_proto(replace(_session_plan(), regions=[invalid_region])),
     )
 
     with pytest.raises(_AbortCalled) as error:
         servicer.PlanSession(request, _FakeContext())
 
     assert error.value.code == grpc.StatusCode.INVALID_ARGUMENT
-    assert "sector-plan entry" in error.value.details
+    assert "covered_bytes must equal slot_count * label_width_bytes" in error.value.details

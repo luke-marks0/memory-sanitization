@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
+from shutil import copy2
 from time import process_time
 from typing import Any
 
@@ -11,7 +12,6 @@ from pose.benchmarks.summarize import summarize_session_results
 from pose.common.env import capture_environment
 from pose.common.errors import ResourceFailure
 from pose.common.gpu_lease import get_cuda_runtime
-from pose.common.upstream import load_upstream_lock, read_upstream_toolchain, upstream_lock_path
 from pose.protocol.codec import dump_json_file
 from pose.protocol.result_schema import SessionResult
 from pose.verifier.service import VerifierService
@@ -53,7 +53,6 @@ def _capture_toolchains() -> dict[str, str]:
         "cargo_version": _command_output("cargo", "--version"),
         "rustc_version": _command_output("rustc", "--version"),
         "rust_toolchain": (root / "rust-toolchain.toml").read_text(encoding="utf-8"),
-        "upstream_rust_toolchain": read_upstream_toolchain(root),
     }
 
 
@@ -89,6 +88,14 @@ def _capture_gpu_inventory() -> dict[str, object]:
         }
 
 
+def _extract_note_value(notes: list[str], prefix: str) -> str:
+    needle = f"{prefix}="
+    for note in notes:
+        if note.startswith(needle):
+            return note[len(needle) :].strip()
+    return ""
+
+
 def _write_run_artifact(
     run_root: Path,
     *,
@@ -106,16 +113,14 @@ def _write_archive_metadata(
     *,
     plan: dict[str, object],
 ) -> None:
-    root = repo_root()
     dump_json_file(run_root / "plan.json", plan)
     dump_json_file(run_root / "environment.json", {**capture_environment(), **_capture_git_metadata()})
     dump_json_file(run_root / "toolchains.json", _capture_toolchains())
-    dump_json_file(run_root / "upstream.json", load_upstream_lock(upstream_lock_path(root)))
     dump_json_file(run_root / "gpu_inventory.json", _capture_gpu_inventory())
 
 
-def _run_cold_or_warm_benchmark(profile_name: str) -> tuple[list[SessionResult], list[int]]:
-    profile = load_profile(profile_name)
+def _run_cold_or_warm_benchmark(profile_identifier: str) -> tuple[list[SessionResult], list[int]]:
+    profile = load_profile(profile_identifier)
     verifier = VerifierService()
     results: list[SessionResult] = []
     verifier_cpu_times_ms: list[int] = []
@@ -127,8 +132,8 @@ def _run_cold_or_warm_benchmark(profile_name: str) -> tuple[list[SessionResult],
     return results, verifier_cpu_times_ms
 
 
-def _run_rechallenge_benchmark(profile_name: str) -> tuple[list[SessionResult], list[int]]:
-    profile = load_profile(profile_name)
+def _run_rechallenge_benchmark(profile_identifier: str) -> tuple[list[SessionResult], list[int]]:
+    profile = load_profile(profile_identifier)
     if not profile.target_devices.get("host", False) or profile.target_devices.get("gpus"):
         raise ResourceFailure("Rechallenge benchmarks currently require a host-only profile.")
 
@@ -152,22 +157,10 @@ def _run_rechallenge_benchmark(profile_name: str) -> tuple[list[SessionResult], 
 
 def prepare_run(profile_identifier: str) -> dict[str, object]:
     profile = load_profile(profile_identifier)
-    gpu_targets = profile.target_devices.get("gpus")
-    executable = (
-        bool(profile.target_devices.get("host", False)) and not bool(gpu_targets)
-    ) or (
-        not bool(profile.target_devices.get("host", False))
-        and isinstance(gpu_targets, list)
-        and len(gpu_targets) == 1
-    )
     return {
-        "status": "session-ready" if executable else "profile-not-yet-executable",
+        "status": "session-ready",
         "profile": profile.to_dict(),
-        "note": (
-            "Host-only and single-gpu HBM profiles execute the current local session paths."
-            if executable
-            else "This profile requires later multi-gpu or hybrid work."
-        ),
+        "note": "Slot-planned PoSE-DB profile execution is available; GPU and hybrid profiles still depend on matching local hardware.",
     }
 
 
@@ -202,18 +195,27 @@ def run_benchmark(
     _write_archive_metadata(run_root, plan=plan)
 
     if profile.benchmark_class == "rechallenge":
-        results, verifier_cpu_times_ms = _run_rechallenge_benchmark(profile.name)
+        results, verifier_cpu_times_ms = _run_rechallenge_benchmark(profile_identifier)
     else:
-        results, verifier_cpu_times_ms = _run_cold_or_warm_benchmark(profile.name)
+        results, verifier_cpu_times_ms = _run_cold_or_warm_benchmark(profile_identifier)
 
     log_lines: list[str] = []
     result_paths: list[str] = []
+    calibration_artifact_paths: list[str] = []
     for index, (result, cpu_ms) in enumerate(
         zip(results, verifier_cpu_times_ms, strict=True),
         start=1,
     ):
         path = _write_run_artifact(run_root, result=result, run_index=index)
         result_paths.append(str(path))
+        calibration_artifact = _extract_note_value(result.notes, "calibration_artifact")
+        if calibration_artifact:
+            source_path = Path(calibration_artifact)
+            if source_path.exists():
+                copied_path = run_root / "calibration" / f"run-{index:03d}.calibration.json"
+                copied_path.parent.mkdir(parents=True, exist_ok=True)
+                copy2(source_path, copied_path)
+                calibration_artifact_paths.append(str(copied_path))
         log_lines.append(
             " ".join(
                 (
@@ -221,9 +223,15 @@ def run_benchmark(
                     f"session_id={result.session_id}",
                     f"verdict={result.verdict}",
                     f"success={str(result.success).lower()}",
-                    f"cpu_fallback={str(result.cpu_fallback_detected).lower()}",
-                    f"cpu_fallback_events={len(result.cpu_fallback_events)}",
-                    f"response_ms={result.response_ms}",
+                    f"coverage_fraction={result.coverage_fraction:.6f}",
+                    f"q_bound={result.q_bound}",
+                    f"gamma={result.gamma}",
+                    f"reported_success_bound={result.reported_success_bound}",
+                    f"scratch_peak_bytes={result.scratch_peak_bytes}",
+                    f"q_over_gamma={(result.q_bound / float(result.gamma)) if result.gamma else 0.0:.6f}",
+                    f"round_trip_p95_us={result.round_trip_p95_us}",
+                    f"max_round_trip_us={result.max_round_trip_us}",
+                    f"fast_phase_ms={result.timings_ms['fast_phase_total']}",
                     f"total_ms={result.timings_ms['total']}",
                     f"verifier_cpu_ms={cpu_ms}",
                 )
@@ -240,11 +248,11 @@ def run_benchmark(
             "benchmark_class": profile.benchmark_class,
             "run_directory": str(run_root),
             "result_paths": result_paths,
+            "calibration_artifact_paths": calibration_artifact_paths,
             "summary_path": str(run_root / "summary.json"),
             "log_path": str(run_root / "benchmark.log"),
             "environment_path": str(run_root / "environment.json"),
             "toolchains_path": str(run_root / "toolchains.json"),
-            "upstream_path": str(run_root / "upstream.json"),
             "gpu_inventory_path": str(run_root / "gpu_inventory.json"),
         },
     )
@@ -254,11 +262,11 @@ def run_benchmark(
         "archive": {
             "run_directory": str(run_root),
             "result_paths": result_paths,
+            "calibration_artifact_paths": calibration_artifact_paths,
             "summary_path": str(run_root / "summary.json"),
             "log_path": str(run_root / "benchmark.log"),
             "environment_path": str(run_root / "environment.json"),
             "toolchains_path": str(run_root / "toolchains.json"),
-            "upstream_path": str(run_root / "upstream.json"),
             "gpu_inventory_path": str(run_root / "gpu_inventory.json"),
         },
         "summary": summary,

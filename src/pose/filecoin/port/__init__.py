@@ -1,2 +1,0 @@
-"""Staged Python port namespace."""
-

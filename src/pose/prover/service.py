@@ -3,54 +3,39 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
-from pose.common.errors import ResourceFailure, UnsupportedPhaseError
-from pose.filecoin.reference import VendoredFilecoinReference
-from pose.filecoin.mirror.comms import assemble_commitment
-from pose.filecoin.mirror.labels import derive_label
-from pose.filecoin.mirror.parents import drg_parents, expander_parents
-from pose.filecoin.mirror.replica_id import derive_replica_id
+from pose.common.errors import UnsupportedPhaseError
+from pose.graphs import build_pose_db_graph, compute_challenge_labels
 from pose.prover.grpc_service import serve_unix
 
 
 class ProverService:
     def describe(self) -> dict[str, object]:
-        try:
-            bridge_status = VendoredFilecoinReference().bridge_status()
-        except ResourceFailure as error:
-            bridge_status = {
-                "status": "bridge-unavailable",
-                "supports_real_filecoin_reference": False,
-                "note": str(error),
-            }
         return {
-            "status": "phase2-single-gpu-hbm-complete",
+            "status": "pose-db-fast-phase-ready",
+            "protocol": "graph-based PoSE-DB",
             "supports_host_memory": True,
             "supports_gpu_hbm": True,
-            "supports_real_filecoin_reference": bool(
-                bridge_status.get("supports_real_filecoin_reference", False)
-            ),
-            "filecoin_bridge": bridge_status,
+            "transport": "gRPC over Unix domain sockets",
+            "fast_phase": "timed single-label challenge rounds",
         }
 
     def self_test(self) -> dict[str, object]:
-        replica_id = derive_replica_id(
-            prover_id=b"foundation-prover",
-            sector_id=1,
-            ticket=b"ticket",
-            porep_id=b"porep",
+        graph = build_pose_db_graph(
+            label_count_m=8,
+            hash_backend="blake3-xof",
+            label_width_bits=256,
         )
-        parents = drg_parents(7, 6, 256) + expander_parents(7, 8, 256)
-        label = derive_label(replica_id, layer=1, node=7, parents=parents)
+        labels = compute_challenge_labels(
+            graph,
+            session_seed="11" * 32,
+            challenge_indices=[0, 1],
+        )
         return {
             "status": "ok",
-            "replica_id": replica_id,
-            "label": label,
-            "commitment": assemble_commitment(
-                [replica_id.encode("ascii"), label.encode("ascii")]
-            ),
-            "real_filecoin_bridge_available": self.describe()[
-                "supports_real_filecoin_reference"
-            ],
+            "graph_descriptor_digest": graph.graph_descriptor_digest,
+            "label_count_m": graph.label_count_m,
+            "gamma": graph.gamma,
+            "challenge_label_hex": [label.hex() for label in labels],
         }
 
     def serve(self, config_path: str) -> None:

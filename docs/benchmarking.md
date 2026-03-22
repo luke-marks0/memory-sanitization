@@ -2,23 +2,28 @@
 
 ## Purpose
 
-Benchmarking is a first-class requirement because the repository makes a
-time-bounded security claim. Artifact capture and comparison are not optional.
+Benchmarking is part of the protocol, not a separate convenience feature.
+
+The repository makes timed claims, so benchmark artifacts must preserve enough
+information to justify:
+
+- resident lookup timing;
+- transport overhead;
+- hash-throughput assumptions;
+- calibrated `q`;
+- the `q < gamma` margin for each production profile.
 
 ## Benchmark Classes
 
-The benchmark harness is required to support:
+The benchmark harness supports these run classes:
 
 - `cold`
 - `warm`
 - `rechallenge`
 
-These benchmark classes are modeled directly in the profile files and the
-archive metadata emitted by `pose bench run`.
-
 ## Required Profiles
 
-The repository ships the required named profiles:
+The required named profiles are:
 
 - `dev-small`
 - `single-h100-host-max`
@@ -27,57 +32,42 @@ The repository ships the required named profiles:
 - `eight-h100-hbm-max`
 - `eight-h100-hybrid-max`
 
-Each profile captures:
+Each profile should define:
 
-- target devices;
-- reserve policy;
-- host and per-GPU target fractions;
-- PoRep unit storage profile;
-- leaf size;
-- challenge policy;
+- target devices and reserve policy;
+- `w_bits`;
+- graph family and hash backend;
+- adversary model;
+- attacker-budget assumption;
+- fixed `r` or target success bound;
 - deadline policy;
+- calibration policy;
 - cleanup policy;
 - repetition count.
 
-## Artifact Archive
+## Required Artifacts
 
-`pose bench run --profile ...` archives benchmark bundles under
-`.pose/benchmarks/<profile>/<timestamp>/`.
+Archived benchmark bundles should include:
 
-Each archived bundle includes:
+- result artifacts;
+- benchmark summary;
+- benchmark log;
+- calibration evidence;
+- environment snapshot;
+- GPU inventory where applicable;
+- native acceleration versions where applicable.
 
-- result JSON;
-- benchmark summary JSON;
-- benchmark logs;
-- environment metadata;
-- upstream commit identity;
-- toolchain versions;
-- GPU inventory where applicable.
+## Reported Metrics
 
-The summary reports:
+Benchmark summaries should report at minimum:
 
 - success rate;
 - deadline miss rate;
-- mean / p50 / p95 / p99 per timing key;
 - coverage fraction;
-- real-PoRep ratio;
+- slack bytes;
+- `q`, `gamma`, and `q/gamma`;
+- attacker-budget assumption;
+- reported success bound;
 - per-device HBM coverage;
 - verifier CPU time;
-- rechallenge performance where applicable.
-
-## Current Status
-
-The repository currently provides:
-
-- profile definitions under `bench_profiles/`;
-- a Python loader for those profiles;
-- archived benchmark execution for host-only and single-gpu HBM profiles;
-- machine-readable benchmark summaries;
-- a lab matrix script entrypoint.
-
-The current executable benchmark paths are:
-
-- the host-only `minimal` profile flow used by `dev-small`;
-- the single-gpu HBM flow used by `single-h100-hbm-max`.
-
-Hybrid and multi-GPU profile names remain shipped for later phases.
+- rechallenge performance.

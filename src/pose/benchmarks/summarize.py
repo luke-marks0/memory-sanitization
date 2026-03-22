@@ -50,28 +50,40 @@ def summarize_session_results(
     per_device_hbm_coverage: dict[str, list[int]] = {}
 
     success_count = 0
-    cpu_fallback_run_count = 0
     deadline_miss_count = 0
     coverage_fractions: list[float] = []
-    real_porep_ratios: list[float] = []
-    rechallenge_response_ms: list[int] = []
-    cpu_fallback_events: list[str] = []
-    seen_cpu_fallback_events: set[str] = set()
+    slack_bytes: list[int] = []
+    scratch_peak_bytes: list[int] = []
+    declared_stage_copy_bytes: list[int] = []
+    q_bounds: list[int] = []
+    q_over_gamma: list[float] = []
+    gammas: list[int] = []
+    attacker_budgets: list[int] = []
+    success_bounds: list[float] = []
+    round_trip_p50_us: list[int] = []
+    round_trip_p95_us: list[int] = []
+    round_trip_p99_us: list[int] = []
+    max_round_trip_us: list[int] = []
+    soundness_models: dict[str, int] = {}
 
     for result in results:
         verdicts[result.verdict] = verdicts.get(result.verdict, 0) + 1
         success_count += int(result.success)
-        cpu_fallback_run_count += int(result.cpu_fallback_detected)
-        deadline_miss_count += int(result.verdict == "TIMEOUT")
+        deadline_miss_count += int(result.verdict == "DEADLINE_MISS")
         coverage_fractions.append(float(result.coverage_fraction))
-        real_porep_ratios.append(float(result.real_porep_ratio))
-        if result.run_class == "rechallenge":
-            rechallenge_response_ms.append(int(result.response_ms))
-        for event in result.cpu_fallback_events:
-            if event in seen_cpu_fallback_events:
-                continue
-            seen_cpu_fallback_events.add(event)
-            cpu_fallback_events.append(str(event))
+        slack_bytes.append(int(result.slack_bytes))
+        scratch_peak_bytes.append(int(result.scratch_peak_bytes))
+        declared_stage_copy_bytes.append(int(result.declared_stage_copy_bytes))
+        q_bounds.append(int(result.q_bound))
+        gammas.append(int(result.gamma))
+        q_over_gamma.append((int(result.q_bound) / float(result.gamma)) if int(result.gamma) else 0.0)
+        attacker_budgets.append(int(result.attacker_budget_bytes_assumed))
+        success_bounds.append(float(result.reported_success_bound))
+        round_trip_p50_us.append(int(result.round_trip_p50_us))
+        round_trip_p95_us.append(int(result.round_trip_p95_us))
+        round_trip_p99_us.append(int(result.round_trip_p99_us))
+        max_round_trip_us.append(int(result.max_round_trip_us))
+        soundness_models[result.soundness_model] = soundness_models.get(result.soundness_model, 0) + 1
 
         for key, value in result.timings_ms.items():
             timings.setdefault(key, []).append(int(value))
@@ -82,15 +94,22 @@ def summarize_session_results(
     return {
         "result_count": total,
         "success_rate": (success_count / total) if total else 0.0,
-        "cpu_fallback": {
-            "detected_run_count": cpu_fallback_run_count,
-            "detected_run_rate": (cpu_fallback_run_count / total) if total else 0.0,
-            "unique_events": cpu_fallback_events,
-        },
         "deadline_miss_rate": (deadline_miss_count / total) if total else 0.0,
         "verdict_counts": verdicts,
         "coverage_fraction": _series_summary(coverage_fractions),
-        "real_porep_ratio": _series_summary(real_porep_ratios),
+        "slack_bytes": _series_summary(slack_bytes),
+        "scratch_peak_bytes": _series_summary(scratch_peak_bytes),
+        "declared_stage_copy_bytes": _series_summary(declared_stage_copy_bytes),
+        "q_bound": _series_summary(q_bounds),
+        "q_over_gamma": _series_summary(q_over_gamma),
+        "gamma": _series_summary(gammas),
+        "attacker_budget_bytes_assumed": _series_summary(attacker_budgets),
+        "soundness_models": soundness_models,
+        "reported_success_bound": _series_summary(success_bounds),
+        "round_trip_p50_us": _series_summary(round_trip_p50_us),
+        "round_trip_p95_us": _series_summary(round_trip_p95_us),
+        "round_trip_p99_us": _series_summary(round_trip_p99_us),
+        "max_round_trip_us": _series_summary(max_round_trip_us),
         "timings_ms": {
             key: _series_summary(values)
             for key, values in sorted(timings.items())
@@ -100,9 +119,6 @@ def summarize_session_results(
             for device, values in sorted(per_device_hbm_coverage.items())
         },
         "verifier_cpu_time_ms": _series_summary(verifier_cpu_times_ms or ()),
-        "rechallenge_performance": (
-            _series_summary(rechallenge_response_ms) if rechallenge_response_ms else None
-        ),
     }
 
 

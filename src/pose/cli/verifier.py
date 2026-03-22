@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+from pose.benchmarks.calibration import prepare_calibration
 from pose.benchmarks.profiles import load_profile
 from pose.common.errors import ProtocolError
 from pose.protocol.result_schema import SessionResult
@@ -17,19 +18,38 @@ def _print_json(payload: dict[str, object]) -> None:
 
 
 def _print_summary(result: SessionResult) -> None:
+    formal_notes = "; ".join(result.formal_claim_notes) if result.formal_claim_notes else "none"
+    operational_notes = "; ".join(result.operational_claim_notes) if result.operational_claim_notes else "none"
     print(
         "\n".join(
             [
                 f"verdict: {result.verdict}",
                 f"session_id: {result.session_id}",
+                f"graph_family: {result.graph_family}",
+                f"graph_parameter_n: {result.graph_parameter_n}",
+                f"label_count_m: {result.label_count_m}",
+                f"gamma: {result.gamma}",
+                f"hash_backend: {result.hash_backend}",
                 f"host_covered_bytes: {result.host_covered_bytes}",
                 f"gpu_covered_bytes: {sum(result.gpu_covered_bytes_by_device.values())}",
-                f"fill_ratio: {result.coverage_fraction:.6f}",
-                f"real_porep_ratio: {result.real_porep_ratio:.6f}",
+                f"covered_bytes: {result.covered_bytes}",
+                f"slack_bytes: {result.slack_bytes}",
+                f"coverage_fraction: {result.coverage_fraction:.6f}",
+                f"rounds_r: {result.rounds_r}",
+                f"deadline_us: {result.deadline_us}",
+                f"q_bound: {result.q_bound}",
+                f"adversary_model: {result.adversary_model}",
+                f"attacker_budget_bytes_assumed: {result.attacker_budget_bytes_assumed}",
+                f"reported_success_bound: {result.reported_success_bound}",
+                f"formal_claim_notes: {formal_notes}",
+                f"operational_claim_notes: {operational_notes}",
+                f"scratch_peak_bytes: {result.scratch_peak_bytes}",
+                f"round_trip_p50_us: {result.round_trip_p50_us}",
+                f"round_trip_p95_us: {result.round_trip_p95_us}",
+                f"round_trip_p99_us: {result.round_trip_p99_us}",
                 f"total_runtime_ms: {result.timings_ms['total']}",
-                f"challenge_response_ms: {result.response_ms}",
-                f"inner_filecoin_verified: {str(result.inner_filecoin_verified).lower()}",
-                f"outer_pose_verified: {str(result.outer_pose_verified).lower()}",
+                f"max_round_trip_us: {result.max_round_trip_us}",
+                f"cleanup_status: {result.cleanup_status}",
             ]
         ),
         file=sys.stderr,
@@ -85,6 +105,12 @@ def handle_verify_record(args: argparse.Namespace) -> int:
     return 0
 
 
+def handle_calibrate(args: argparse.Namespace) -> int:
+    payload = prepare_calibration(args.profile)
+    _print_json(payload)
+    return 0 if payload.get("status") == "calibrated" else 1
+
+
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     parser = subparsers.add_parser("verifier", help="Verifier persona commands.")
     verifier_subparsers = parser.add_subparsers(dest="verifier_command", required=True)
@@ -115,3 +141,10 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     )
     verify_record_parser.add_argument("path")
     verify_record_parser.set_defaults(func=handle_verify_record)
+
+    calibrate_parser = verifier_subparsers.add_parser(
+        "calibrate",
+        help="Prepare or run profile calibration.",
+    )
+    calibrate_parser.add_argument("--profile", required=True)
+    calibrate_parser.set_defaults(func=handle_calibrate)

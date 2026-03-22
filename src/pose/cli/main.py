@@ -8,7 +8,7 @@ from pose.cli import bench, prover, verifier
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pose",
-        description="Python-first PoSE repository scaffold.",
+        description="Python-first PoSE-DB verifier/prover tooling.",
     )
     subparsers = parser.add_subparsers(dest="persona", required=True)
     prover.register(subparsers)
@@ -25,4 +25,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -8,14 +8,17 @@ def test_repository_layout_exists() -> None:
     required_paths = [
         root / "docs" / "repository-spec.md",
         root / "docs" / "architecture.md",
-        root / "vendor" / "UPSTREAM.lock",
-        root / "rust" / "pose_filecoin_bridge" / "Cargo.toml",
+        root / "docs" / "graph-construction.md",
+        root / "docs" / "security-model.md",
+        root / "docs" / "references" / "software-based-memory-erasure-relaxed-isolation.pdf",
         root / "proto" / "pose" / "v1" / "session.proto",
         root / "src" / "pose" / "cli" / "main.py",
+        root / "src" / "pose" / "cli" / "calibrate.py",
+        root / "src" / "pose" / "graphs",
+        root / "src" / "pose" / "hashing",
+        root / "src" / "pose" / "benchmarks" / "calibration.py",
         root / "bench_profiles" / "dev-small.yaml",
-        root / "scripts" / "sync_upstream.sh",
         root / "tests" / "parity",
     ]
     for path in required_paths:
         assert path.exists(), path
-

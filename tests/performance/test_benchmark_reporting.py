@@ -12,26 +12,41 @@ def test_benchmark_summary_reports_hbm_timing_and_coverage_metrics() -> None:
     result.gpu_covered_bytes_by_device = {"0": 123456}
     result.gpu_usable_bytes_by_device = {"0": 234567}
     result.coverage_fraction = 0.91
-    result.real_porep_ratio = 1.0
-    result.response_ms = 17
-    result.cpu_fallback_detected = True
-    result.cpu_fallback_events = ["[WARN:bellperson::gpu] GPU FFT failed! Falling back to CPU."]
+    result.slack_bytes = 4096
+    result.scratch_peak_bytes = 2048
+    result.declared_stage_copy_bytes = 0
+    result.q_bound = 4096
+    result.gamma = 8192
+    result.attacker_budget_bytes_assumed = 33554432
+    result.soundness_model = "random-oracle + distant-attacker + calibrated q<gamma"
+    result.reported_success_bound = 1e-9
+    result.round_trip_p50_us = 120
+    result.round_trip_p95_us = 150
+    result.round_trip_p99_us = 165
+    result.max_round_trip_us = 170
     result.timings_ms["copy_to_hbm"] = 12
-    result.timings_ms["challenge_response"] = 17
-    result.timings_ms["outer_tree_build"] = 9
+    result.timings_ms["fast_phase_total"] = 17
+    result.timings_ms["verifier_check_total"] = 9
     result.timings_ms["total"] = 40
 
     summary = summarize_session_results([result], verifier_cpu_times_ms=[11])
 
     assert summary["success_rate"] == 1.0
     assert summary["coverage_fraction"]["mean"] == 0.91
-    assert summary["real_porep_ratio"]["mean"] == 1.0
+    assert summary["slack_bytes"]["mean"] == 4096.0
+    assert summary["scratch_peak_bytes"]["mean"] == 2048.0
+    assert summary["declared_stage_copy_bytes"]["mean"] == 0.0
+    assert summary["q_bound"]["mean"] == 4096.0
+    assert summary["q_over_gamma"]["mean"] == 0.5
+    assert summary["gamma"]["mean"] == 8192.0
+    assert summary["attacker_budget_bytes_assumed"]["mean"] == 33554432.0
     assert summary["timings_ms"]["copy_to_hbm"]["mean"] == 12.0
-    assert summary["timings_ms"]["challenge_response"]["mean"] == 17.0
+    assert summary["timings_ms"]["fast_phase_total"]["mean"] == 17.0
     assert summary["per_device_hbm_coverage_bytes"]["0"]["mean"] == 123456.0
     assert summary["verifier_cpu_time_ms"]["mean"] == 11.0
-    assert summary["cpu_fallback"]["detected_run_count"] == 1
-    assert summary["cpu_fallback"]["detected_run_rate"] == 1.0
-    assert summary["cpu_fallback"]["unique_events"] == [
-        "[WARN:bellperson::gpu] GPU FFT failed! Falling back to CPU."
-    ]
+    assert summary["soundness_models"]["random-oracle + distant-attacker + calibrated q<gamma"] == 1
+    assert summary["reported_success_bound"]["mean"] == 1e-9
+    assert summary["round_trip_p50_us"]["mean"] == 120.0
+    assert summary["round_trip_p95_us"]["mean"] == 150.0
+    assert summary["round_trip_p99_us"]["mean"] == 165.0
+    assert summary["max_round_trip_us"]["mean"] == 170.0

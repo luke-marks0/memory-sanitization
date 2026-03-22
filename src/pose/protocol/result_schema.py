@@ -1,18 +1,19 @@
 from __future__ import annotations
 
-from dataclasses import MISSING, asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any
 
 from pose.common.env import capture_environment
 from pose.common.errors import ProtocolError
 from pose.common.timing import REQUIRED_TIMING_KEYS, empty_timings
+from pose.hashing import DEFAULT_HASH_BACKEND
 from pose.protocol.session_ids import generate_session_id
 
 VERDICTS = (
     "SUCCESS",
-    "INNER_PROOF_INVALID",
-    "OUTER_PROOF_INVALID",
-    "TIMEOUT",
+    "WRONG_RESPONSE",
+    "DEADLINE_MISS",
+    "CALIBRATION_INVALID",
     "COVERAGE_BELOW_THRESHOLD",
     "RESOURCE_FAILURE",
     "CLEANUP_FAILURE",
@@ -26,39 +27,47 @@ class SessionResult:
     verdict: str
     session_id: str
     profile_name: str
+    graph_family: str
+    graph_parameter_n: int
+    graph_descriptor_digest: str
+    label_width_bits: int
+    label_count_m: int
+    gamma: int
+    hash_backend: str
     run_class: str = "cold"
-    session_nonce: str = ""
-    session_plan_root: str = ""
-    session_manifest_root: str = ""
+    session_seed_commitment: str = ""
     artifact_path: str = ""
     resident_socket_path: str = ""
     resident_process_id: int = 0
     lease_expiry: str = ""
+    adversary_model: str = "general"
+    attacker_budget_bytes_assumed: int = 0
+    target_success_bound: float = 0.0
+    reported_success_bound: float = 0.0
+    soundness_model: str = ""
+    deadline_us: int = 0
+    q_bound: int = 0
+    rounds_r: int = 0
+    accepted_rounds: int = 0
     host_total_bytes: int = 0
     host_usable_bytes: int = 0
     host_covered_bytes: int = 0
     gpu_devices: list[int] = field(default_factory=list)
     gpu_usable_bytes_by_device: dict[str, int] = field(default_factory=dict)
     gpu_covered_bytes_by_device: dict[str, int] = field(default_factory=dict)
-    region_roots: dict[str, str] = field(default_factory=dict)
-    region_manifest_roots: dict[str, str] = field(default_factory=dict)
-    region_payload_bytes_by_region: dict[str, int] = field(default_factory=dict)
-    challenge_indices_by_region: dict[str, list[int]] = field(default_factory=dict)
-    real_porep_bytes: int = 0
-    tail_filler_bytes: int = 0
-    real_porep_ratio: float = 0.0
+    covered_bytes: int = 0
+    slack_bytes: int = 0
     coverage_fraction: float = 0.0
-    inner_filecoin_verified: bool = False
-    cpu_fallback_detected: bool = False
-    cpu_fallback_events: list[str] = field(default_factory=list)
-    outer_pose_verified: bool = False
-    challenge_leaf_size: int = 4096
-    challenge_policy: dict[str, int | float] = field(default_factory=dict)
-    challenge_count: int = 0
-    deadline_ms: int = 0
-    response_ms: int = 0
+    scratch_peak_bytes: int = 0
+    declared_stage_copy_bytes: int = 0
+    round_trip_p50_us: int = 0
+    round_trip_p95_us: int = 0
+    round_trip_p99_us: int = 0
+    max_round_trip_us: int = 0
     cleanup_status: str = "NOT_RUN"
-    cleanup_policy: dict[str, bool] = field(default_factory=dict)
+    formal_claim_notes: list[str] = field(default_factory=list)
+    operational_claim_notes: list[str] = field(default_factory=list)
+    claim_notes: list[str] = field(default_factory=list)
     timings_ms: dict[str, int] = field(default_factory=empty_timings)
     environment: dict[str, str] = field(default_factory=capture_environment)
     notes: list[str] = field(default_factory=list)
@@ -93,9 +102,7 @@ class SessionResult:
 
 
 REQUIRED_RESULT_FIELDS = tuple(
-    item.name
-    for item in fields(SessionResult)
-    if item.default is MISSING and item.default_factory is MISSING
+    item.name for item in fields(SessionResult)
 )
 
 
@@ -105,6 +112,14 @@ def bootstrap_result(profile_name: str, note: str | None = None) -> SessionResul
         verdict="PROTOCOL_ERROR",
         session_id=generate_session_id(),
         profile_name=profile_name,
+        graph_family="pose-db-drg-v1",
+        graph_parameter_n=0,
+        graph_descriptor_digest="",
+        label_width_bits=256,
+        label_count_m=0,
+        gamma=0,
+        hash_backend=DEFAULT_HASH_BACKEND,
+        soundness_model="random-oracle + distant-attacker + calibrated q<gamma",
     )
     if note:
         result.notes.append(note)

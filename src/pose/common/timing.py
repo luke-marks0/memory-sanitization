@@ -7,18 +7,15 @@ REQUIRED_TIMING_KEYS = (
     "discover",
     "region_leasing",
     "allocation",
-    "data_generation",
-    "seal_pre_commit_phase1",
-    "seal_pre_commit_phase2",
-    "seal_commit_phase1",
-    "seal_commit_phase2",
-    "object_serialization",
+    "graph_construction",
+    "challenge_schedule_prep",
+    "expected_response_prep",
+    "label_generation",
     "copy_to_host",
     "copy_to_hbm",
-    "outer_tree_build",
-    "inner_verify",
-    "challenge_response",
-    "outer_verify",
+    "stage_buffer_cleanup",
+    "fast_phase_total",
+    "verifier_check_total",
     "cleanup",
     "total",
 )
@@ -41,4 +38,3 @@ class TimingTracker:
         duration_ms = int((perf_counter() - started) * 1000)
         self.values[key] = duration_ms
         return duration_ms
-

@@ -2,63 +2,79 @@
 
 ## Transport
 
-The target transport is versioned gRPC over Unix domain sockets by default, with
-loopback TCP allowed when Unix sockets are unavailable.
+The control plane uses versioned same-host IPC, with gRPC over Unix domain
+sockets as the default baseline.
 
-Phase 1 now implements the same-host production path over versioned gRPC Unix
-domain sockets.
-
-- the protobuf schema lives in `proto/pose/v1/session.proto`;
-- generated Python bindings live in `src/pose/v1/`;
-- `pose prover serve --config prover.toml` runs the prover-side gRPC service;
-- `pose verifier run ...` auto-starts an ephemeral prover service for local
-  host-only sessions unless the user starts one explicitly.
+The fast phase is separate in concept even if it temporarily shares the same
+transport implementation during migration. Production profiles are valid only if
+their calibration includes the real transport overhead and still establishes
+`q < gamma`.
 
 ## Normative Session Flow
 
-The implemented Phase 1 host path follows the spec-defined flow:
+The target PoSE-DB session flow is:
 
 1. `Discover`
 2. `PlanSession`
 3. `LeaseRegions`
-4. `GenerateInnerPoRep`
-5. `MaterializeRegionPayloads`
-6. `CommitRegions`
-7. `VerifyInnerProofs`
-8. `ChallengeOuter`
-9. `VerifyOuter`
-10. `Finalize`
-11. `Cleanup`
+4. `SeedSession`
+5. `MaterializeLabels`
+6. `PrepareFastPhase`
+7. `RunFastPhase`
+8. `Finalize`
+9. `Cleanup`
 
-## Session Planning Requirements
+## Session Planning
 
-The verifier owns the policy layer and produces a session plan that includes:
+The verifier owns session planning.
 
-- session identity and nonce;
-- region plan and lease metadata;
-- PoRep unit profile and sector plan;
-- challenge policy and deadline policy;
+The session plan must bind at minimum:
+
+- session ID and session seed;
+- graph family and graph parameters;
+- `m`, `gamma`, `w_bits`, and hash backend;
+- region plan and slot layout;
+- adversary model and attacker-budget assumption;
+- round count `r`, deadline `Delta`, and calibrated `q`;
 - cleanup policy.
 
-## Lease Ownership Model
+## Challenged State
+
+The covered state is the label array:
+
+`sigma = l(o1) || l(o2) || ... || l(om)`
+
+Each challenge index identifies one slot in that array and therefore one
+physical slot in one verifier-leased region.
+
+## Lease Ownership
 
 The verifier allocates challenged regions and leases them to the prover.
 
-- Host mode uses verifier-owned shared mappings or equivalent handles.
+- host mode uses verifier-owned shared mappings or equivalent handles;
 - HBM mode uses verifier-owned CUDA allocations exported through CUDA IPC.
 
-The lease boundary exists so coverage claims remain tied to explicit,
-verifier-tracked memory.
+The lease boundary is the basis for operational claim reporting.
+
+## Fast Phase
+
+For each round:
+
+- the verifier samples one challenge index uniformly from `[0, m)`;
+- the verifier starts the round timer immediately before challenge emission;
+- the prover returns the label bytes stored in that slot;
+- the verifier rejects the round if the response is wrong or late.
 
 ## Output Requirements
 
-Every verifier run produces:
+Every verifier run must emit a machine-readable result artifact containing at
+least:
 
-- a machine-readable JSON result artifact;
-- a stable verdict;
-- coverage and real-PoRep accounting;
-- per-phase timings;
+- verdict and success bit;
+- graph/session parameters;
+- attacker-budget assumption and soundness model;
+- covered and slack bytes by tier;
+- calibrated `q`, `gamma`, and rounds `r`;
+- per-phase and fast-phase timing data;
+- cleanup status;
 - environment metadata.
-
-The verifier writes the canonical JSON artifact under `.pose/results/`, prints a
-human-readable summary to stderr, and prints the JSON artifact to stdout.
