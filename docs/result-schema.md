@@ -70,6 +70,12 @@ The required fields are:
 - `environment`
 - `notes`
 
+`declared_stage_copy_bytes` must remain explicit even for rejected sessions. If
+the prover reports surviving stage copies or host shadows entering the fast
+phase, the artifact should record the nonzero byte count and include notes or
+claim-scope text explaining why the session was rejected or how the extra state
+was accounted for.
+
 ## Timing Breakdown
 
 The timing artifact should cover at least:

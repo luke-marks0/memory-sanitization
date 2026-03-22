@@ -3,9 +3,9 @@
 This checklist tracks the repository's hard cutover from the old Filecoin PoRep-based design to the graph-based PoSE-DB design required by `docs/repository-spec.md`.
 
 Cutover rule:
-- [ ] Do not preserve runtime, schema, test, benchmark, or documentation compatibility with PoRep.
-- [ ] Do not retain PoRep codepaths as legacy or fallback behavior.
-- [ ] Treat any remaining PoRep references in supported code or docs as migration bugs until removed.
+- [x] Do not preserve runtime, schema, test, benchmark, or documentation compatibility with PoRep.
+- [x] Do not retain PoRep codepaths as legacy or fallback behavior.
+- [x] Treat any remaining PoRep references in supported code or docs as migration bugs until removed.
 
 ## 1. Repository And Documentation Alignment
 
@@ -18,7 +18,7 @@ Cutover rule:
 - [x] Rewrite `docs/result-schema.md` to the PoSE-DB result artifact fields.
 - [x] Rewrite `docs/benchmarking.md` to include calibration artifacts, `q`, `gamma`, attacker-budget reporting, and rechallenge semantics.
 - [x] Rewrite `docs/threat-model.md` around the distant-attacker model, random-oracle assumption, and honest `M` accounting.
-- [ ] Delete PoRep-only documents that no longer describe supported behavior.
+- [x] Delete PoRep-only documents that no longer describe supported behavior.
 - [x] Remove PoRep language from `README.md`.
 - [x] Rename package/project descriptions in `pyproject.toml`, `Cargo.toml`, and any remaining metadata from Filecoin/PoRep wording to PoSE/PoSE-DB wording.
 
@@ -133,7 +133,7 @@ Cutover rule:
 - [x] Keep verifier-owned host leases and adapt them for slot-based reads and writes.
 - [ ] Keep verifier-owned CUDA IPC leases and adapt them for slot-based reads and writes.
 - [ ] Ensure production HBM mode does not use managed/unified memory.
-- [ ] Add explicit reporting for any host shadow or stage copy that survives into the fast phase.
+- [x] Add explicit reporting for any host shadow or stage copy that survives into the fast phase.
 - [x] Confirm fast-phase transport is low-jitter enough for calibrated profiles.
 - [x] If gRPC remains on the fast path, ensure calibration captures its actual overhead and jitter.
 - [ ] Add a lower-overhead fast-phase transport if gRPC cannot support valid production calibration margins.
@@ -147,21 +147,23 @@ Cutover rule:
 - [x] Rewrite benchmark summaries to report `q`, `gamma`, coverage, slack, attacker-budget assumption, and soundness bound.
 - [x] Ensure result artifacts include all fields required by the new spec.
 - [x] Ensure human-readable summaries do not overstate tier-specific claims.
-- [ ] Update `Makefile` targets to match the new build, calibration, and test workflows.
+- [x] Update `Makefile` targets to match the new build, calibration, and test workflows.
 
 ## 12. Tests
 
-- [ ] Replace PoRep serialization tests with graph descriptor and label semantics tests.
-- [ ] Replace real-bridge e2e tests with PoSE-DB end-to-end host sessions.
-- [ ] Add paper-conformance tests for graph family, arbitrary-`m`, challenge distribution, and soundness formulas.
-- [ ] Add parity tests between Python reference code and any native accelerators.
-- [ ] Add graph property tests for small exhaustive cases and large structural invariants.
-- [ ] Add label-correctness tests for wrong seed, wrong backend, wrong ordering, and stale replay.
-- [ ] Add protocol tests for malformed messages, duplicate session IDs, timeout handling, and fast-phase transport reporting.
-- [ ] Add in-place and staging tests that reject hidden `O(m)` shadow state.
-- [ ] Add adversarial tests for recomputation-on-demand, hidden host shadows, hidden HBM shadows, sparse writes, copy-in after challenge, and bad `M` accounting.
-- [ ] Update hardware tests for single-H100 host-only, single-H100 HBM-only, single-H100 hybrid, 8xH100 HBM-only, and 8xH100 hybrid.
-- [ ] Update performance tests to track label generation time, HBM transfer time, fast-phase latency, `q/gamma` margin, coverage fraction, and total runtime.
+- [x] Replace PoRep serialization tests with graph descriptor and label semantics tests.
+- [x] Replace real-bridge e2e tests with PoSE-DB end-to-end host sessions.
+- [x] Add paper-conformance tests for graph family, arbitrary-`m`, challenge distribution, and soundness formulas.
+- [x] Add parity tests between Python reference code and any native accelerators.
+- [x] Add graph property tests for small exhaustive cases and large structural invariants.
+- [x] Add label-correctness tests for wrong seed, wrong backend, wrong ordering, and stale replay.
+- [x] Add protocol tests for malformed messages, duplicate session IDs, timeout handling, and fast-phase transport reporting.
+- [x] Add in-place and staging tests that reject hidden `O(m)` shadow state.
+- [x] Add adversarial tests for recomputation-on-demand, hidden host shadows, sparse writes, copy-in after challenge, and bad `M` accounting on the host-only path.
+- [ ] Add adversarial tests for hidden HBM shadows.
+- [x] Update hardware test scaffolding for single-H100 host-only profiles and documentation.
+- [ ] Update hardware tests for single-H100 HBM-only, single-H100 hybrid, 8xH100 HBM-only, and 8xH100 hybrid.
+- [x] Update performance tests to track label generation time, HBM transfer time, fast-phase latency, `q/gamma` margin, coverage fraction, and total runtime.
 - [x] Remove tests that require vendored Filecoin code, the bridge, PoRep witness units, or ex-post C2.
 
 ## 13. Code And Asset Deletion
@@ -171,17 +173,17 @@ Cutover rule:
 - [x] Delete `vendor/rust-fil-proofs/`.
 - [x] Delete Filecoin upstream sync and verification scripts.
 - [x] Delete Filecoin bridge build scripts.
-- [ ] Delete PoRep fixtures and generated vectors that are no longer relevant.
+- [x] Delete PoRep fixtures and generated vectors that are no longer relevant.
 - [x] Delete PoRep-specific benchmark profiles, including ex-post variants.
 - [x] Delete PoRep-specific docs such as serialization and ex-post C2 material if they no longer describe supported behavior.
-- [ ] Delete PoRep-specific result fields, plan fields, and session-store fields.
+- [x] Delete PoRep-specific result fields, plan fields, and session-store fields.
 - [x] Delete any remaining references to Filecoin or PoRep from supported CLI help text.
 
 ## 14. Final Cutover Validation
 
-- [ ] `make build` succeeds on the new codebase.
-- [ ] `make test` succeeds without PoRep dependencies or tooling.
-- [ ] `make test-parity` succeeds for the Python reference and any enabled accelerators.
+- [x] `make build` succeeds on the new codebase.
+- [x] `make test` succeeds without PoRep dependencies or tooling.
+- [x] `make test-parity` succeeds for the Python reference and any enabled accelerators.
 - [x] `make test-graphs` exists and succeeds.
 - [x] `make calibrate PROFILE=dev-small` succeeds.
 - [x] `make bench PROFILE=dev-small` succeeds.
@@ -202,5 +204,5 @@ Cutover rule:
 - [ ] Rebuild host planning and host sessions fourth.
 - [ ] Add calibration and reporting fifth.
 - [ ] Rebuild GPU, hybrid, and 8xH100 paths sixth.
-- [ ] Remove PoRep code and assets only after the new host path is green.
+- [x] Remove PoRep code and assets only after the new host path is green.
 - [ ] Close the migration only after all final validation boxes are checked.

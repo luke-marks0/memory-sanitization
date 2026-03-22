@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from datetime import UTC, datetime, timedelta
 from dataclasses import replace
 from pathlib import Path
 
@@ -9,8 +10,8 @@ import pytest
 
 from pose.graphs import build_graph_descriptor
 from pose.protocol.grpc_codec import GRPC_PROTOCOL_VERSION, session_plan_to_proto
-from pose.protocol.messages import ChallengePolicy, CleanupPolicy, DeadlinePolicy, RegionPlan, SessionPlan
-from pose.prover.grpc_service import PoseSessionServicer
+from pose.protocol.messages import ChallengePolicy, CleanupPolicy, DeadlinePolicy, LeaseRecord, RegionPlan, SessionPlan
+from pose.prover.grpc_service import PoseSessionServicer, SessionState
 from pose.v1 import session_pb2
 
 
@@ -143,3 +144,58 @@ def test_grpc_plan_session_rejects_inconsistent_region_geometry() -> None:
 
     assert error.value.code == grpc.StatusCode.INVALID_ARGUMENT
     assert "covered_bytes must equal slot_count * label_width_bytes" in error.value.details
+
+
+def test_grpc_discover_rejects_unsupported_protocol_version() -> None:
+    servicer = PoseSessionServicer()
+
+    with pytest.raises(_AbortCalled) as error:
+        servicer.Discover(
+            session_pb2.DiscoverRequest(protocol_version="pose-grpc/v0"),
+            _FakeContext(),
+        )
+
+    assert error.value.code == grpc.StatusCode.INVALID_ARGUMENT
+    assert "Unsupported gRPC protocol version" in error.value.details
+
+
+def test_grpc_seed_session_rejects_expired_lease() -> None:
+    servicer = PoseSessionServicer()
+    plan = _session_plan(session_id="expired-session")
+    servicer._sessions[plan.session_id] = SessionState(
+        plan=plan,
+        leases={
+            "host-0": LeaseRecord(
+                region_id="host-0",
+                region_type="host",
+                usable_bytes=256,
+                slot_count=8,
+                slack_bytes=0,
+                lease_handle="expired-lease",
+                lease_expiry=(datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
+                cleanup_policy=plan.cleanup_policy,
+            )
+        },
+    )
+
+    with pytest.raises(_AbortCalled) as error:
+        servicer.SeedSession(
+            session_pb2.SeedSessionRequest(
+                protocol_version=GRPC_PROTOCOL_VERSION,
+                session_id=plan.session_id,
+            ),
+            _FakeContext(),
+        )
+
+    assert error.value.code == grpc.StatusCode.INVALID_ARGUMENT
+    assert "lease expired" in error.value.details
+
+
+def test_grpc_run_fast_phase_rejects_empty_request() -> None:
+    servicer = PoseSessionServicer()
+
+    with pytest.raises(_AbortCalled) as error:
+        servicer.RunFastPhase(session_pb2.RunFastPhaseRequest(rounds=[]), _FakeContext())
+
+    assert error.value.code == grpc.StatusCode.INVALID_ARGUMENT
+    assert "exactly one challenge" in error.value.details

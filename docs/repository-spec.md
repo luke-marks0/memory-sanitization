@@ -444,16 +444,16 @@ The repository shall use the following structure or a structure equivalent in cl
         single-h100.md
         eight-h100.md
 
+    proto/
+      pose/v1/session.proto
+
+    # optional native-acceleration directories when enabled
     rust/
-      pose_accel_bridge/
       pose_reference_kernels/
 
     cuda/
       pose_label_kernels/
       pose_copy_kernels/
-
-    proto/
-      pose/v1/session.proto
 
     src/pose/
       __init__.py

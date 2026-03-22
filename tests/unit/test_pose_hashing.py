@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from pose.common.errors import ProtocolError
+from pose.graphs import build_pose_db_graph, compute_challenge_labels
 from pose.hashing import (
     DEFAULT_HASH_BACKEND,
     SUPPORTED_HASH_BACKENDS,
@@ -121,3 +122,75 @@ def test_graph_descriptor_oracle_binds_hash_backend() -> None:
     assert len(blake3_descriptor) == 32
     assert len(shake_descriptor) == 32
     assert blake3_descriptor != shake_descriptor
+
+
+def test_challenge_labels_bind_session_seed() -> None:
+    graph = build_pose_db_graph(
+        label_count_m=8,
+        graph_parameter_n=2,
+        gamma=4,
+        hash_backend="blake3-xof",
+        label_width_bits=256,
+    )
+
+    baseline = compute_challenge_labels(graph, session_seed="11" * 32, challenge_indices=[0, 3, 7])
+    wrong_seed = compute_challenge_labels(graph, session_seed="22" * 32, challenge_indices=[0, 3, 7])
+
+    assert baseline != wrong_seed
+
+
+def test_challenge_labels_bind_hash_backend() -> None:
+    blake3_graph = build_pose_db_graph(
+        label_count_m=8,
+        graph_parameter_n=2,
+        gamma=4,
+        hash_backend="blake3-xof",
+        label_width_bits=256,
+    )
+    shake_graph = build_pose_db_graph(
+        label_count_m=8,
+        graph_parameter_n=2,
+        gamma=4,
+        hash_backend="shake256",
+        label_width_bits=256,
+    )
+
+    blake3_labels = compute_challenge_labels(blake3_graph, session_seed="11" * 32, challenge_indices=[0, 3, 7])
+    shake_labels = compute_challenge_labels(shake_graph, session_seed="11" * 32, challenge_indices=[0, 3, 7])
+
+    assert blake3_labels != shake_labels
+
+
+def test_internal_labels_bind_predecessor_order() -> None:
+    baseline = internal_label_bytes(
+        session_seed=b"\xaa" * 32,
+        graph_descriptor_digest="sha256:test-descriptor",
+        node_index=7,
+        predecessor_labels=[b"\x01" * 32, b"\x02" * 32],
+        hash_backend="blake3-xof",
+        output_bytes=32,
+    )
+    reordered = internal_label_bytes(
+        session_seed=b"\xaa" * 32,
+        graph_descriptor_digest="sha256:test-descriptor",
+        node_index=7,
+        predecessor_labels=[b"\x02" * 32, b"\x01" * 32],
+        hash_backend="blake3-xof",
+        output_bytes=32,
+    )
+
+    assert baseline != reordered
+
+
+def test_challenge_labels_are_challenge_index_specific_and_not_replayable() -> None:
+    graph = build_pose_db_graph(
+        label_count_m=8,
+        graph_parameter_n=2,
+        gamma=4,
+        hash_backend="blake3-xof",
+        label_width_bits=256,
+    )
+
+    labels = compute_challenge_labels(graph, session_seed="11" * 32, challenge_indices=[0, 3, 7])
+
+    assert len({label.hex() for label in labels}) == len(labels)

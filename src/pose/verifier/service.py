@@ -543,8 +543,19 @@ class VerifierService:
                     raise ProtocolError(
                         f"MaterializeLabels reported slack_bytes that do not match the plan for {region.region_id}."
                     )
-                declared_stage_copy_bytes += int(region_report.get("declared_stage_copy_bytes", 0))
-                if int(region_report.get("declared_stage_copy_bytes", 0)) != 0:
+                region_stage_copy_bytes = int(region_report.get("declared_stage_copy_bytes", 0))
+                declared_stage_copy_bytes += region_stage_copy_bytes
+                if region_stage_copy_bytes != 0:
+                    result.declared_stage_copy_bytes = declared_stage_copy_bytes
+                    result.operational_claim_notes.append(
+                        "materialization declared surviving stage copies into the fast phase totaling "
+                        f"{declared_stage_copy_bytes} bytes"
+                    )
+                    _refresh_claim_notes(result, session_plan.claim_notes)
+                    result.notes.append(
+                        "Declared stage copies survive into the fast phase and are explicitly reported in the "
+                        "result artifact; the current host/runtime slice rejects such sessions."
+                    )
                     raise ProtocolError(
                         "Declared stage copies are not supported in the current PoSE-DB runtime slice."
                     )

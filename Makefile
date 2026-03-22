@@ -10,7 +10,7 @@ check:
 build:
 	$(UV) sync --extra dev
 	$(UV) run $(PYTHON) -m compileall src tests
-	$(UV) run pose --help > /dev/null
+	$(UV) run $(PYTHON) -m pose.cli.main --help > /dev/null
 
 test:
 	$(MAKE) check
@@ -26,10 +26,10 @@ test-hardware:
 	$(UV) run pytest tests/hardware
 
 calibrate:
-	$(UV) run pose verifier calibrate --profile $(PROFILE)
+	$(UV) run $(PYTHON) -m pose.cli.main verifier calibrate --profile $(PROFILE)
 
 bench:
-	$(UV) run pose bench run --profile $(PROFILE)
+	$(UV) run $(PYTHON) -m pose.cli.main bench run --profile $(PROFILE)
 
 clean:
 	rm -rf .venv .pytest_cache dist build target

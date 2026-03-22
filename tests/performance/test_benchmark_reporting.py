@@ -50,3 +50,33 @@ def test_benchmark_summary_reports_hbm_timing_and_coverage_metrics() -> None:
     assert summary["round_trip_p95_us"]["mean"] == 150.0
     assert summary["round_trip_p99_us"]["mean"] == 165.0
     assert summary["max_round_trip_us"]["mean"] == 170.0
+
+
+def test_benchmark_summary_reports_host_q_margin_and_fast_phase_latency() -> None:
+    result = bootstrap_result("dev-small")
+    result.verdict = "SUCCESS"
+    result.success = True
+    result.coverage_fraction = 1.0
+    result.host_covered_bytes = 131072
+    result.host_usable_bytes = 131072
+    result.covered_bytes = 131072
+    result.q_bound = 512
+    result.gamma = 1024
+    result.round_trip_p50_us = 200
+    result.round_trip_p95_us = 260
+    result.round_trip_p99_us = 400
+    result.max_round_trip_us = 450
+    result.timings_ms["label_generation"] = 17
+    result.timings_ms["fast_phase_total"] = 9
+    result.timings_ms["total"] = 44
+
+    summary = summarize_session_results([result], verifier_cpu_times_ms=[6])
+
+    assert summary["coverage_fraction"]["mean"] == 1.0
+    assert summary["q_bound"]["mean"] == 512.0
+    assert summary["q_over_gamma"]["mean"] == 0.5
+    assert summary["timings_ms"]["label_generation"]["mean"] == 17.0
+    assert summary["timings_ms"]["fast_phase_total"]["mean"] == 9.0
+    assert summary["timings_ms"]["total"]["mean"] == 44.0
+    assert summary["round_trip_p95_us"]["mean"] == 260.0
+    assert summary["max_round_trip_us"]["mean"] == 450.0

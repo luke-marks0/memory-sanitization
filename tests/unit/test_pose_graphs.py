@@ -139,3 +139,38 @@ def test_small_graphs_are_exhaustively_depth_robust() -> None:
                     if challenge_node not in removed_nodes and remaining_lengths[challenge_node] >= graph.gamma
                 ]
                 assert len(surviving_challenges) >= label_count_m - removed_count
+
+
+@pytest.mark.parametrize("label_count_m", [5, 8, 17, 33, 129])
+def test_large_graphs_preserve_topological_and_challenge_invariants(label_count_m: int) -> None:
+    graph = build_pose_db_graph(
+        label_count_m=label_count_m,
+        hash_backend="blake3-xof",
+        label_width_bits=256,
+    )
+    longest_paths = graph.longest_path_lengths()
+
+    assert len(graph.challenge_set) == label_count_m
+    assert len(set(graph.challenge_set)) == label_count_m
+    assert all(0 <= challenge_node < graph.node_count for challenge_node in graph.challenge_set)
+    assert all(longest_paths[challenge_node] >= graph.gamma for challenge_node in graph.challenge_set)
+
+    for node_index, predecessors in enumerate(graph.predecessors):
+        assert tuple(sorted(predecessors)) == predecessors
+        assert all(predecessor < node_index for predecessor in predecessors)
+
+
+def test_graph_bucket_size_and_challenge_prefix_are_stable_within_one_n_bucket() -> None:
+    bucket_graphs = [
+        build_pose_db_graph(
+            label_count_m=label_count_m,
+            hash_backend="blake3-xof",
+            label_width_bits=256,
+        )
+        for label_count_m in range(5, 9)
+    ]
+
+    node_counts = {graph.node_count for graph in bucket_graphs}
+    assert len(node_counts) == 1
+    for smaller, larger in zip(bucket_graphs, bucket_graphs[1:]):
+        assert tuple(larger.challenge_set[: smaller.label_count_m]) == smaller.challenge_set
