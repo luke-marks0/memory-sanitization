@@ -49,11 +49,14 @@ def _capture_git_metadata() -> dict[str, str]:
 
 def _capture_toolchains() -> dict[str, str]:
     root = repo_root()
-    return {
+    payload = {
         "cargo_version": _command_output("cargo", "--version"),
         "rustc_version": _command_output("rustc", "--version"),
-        "rust_toolchain": (root / "rust-toolchain.toml").read_text(encoding="utf-8"),
     }
+    rust_toolchain = root / "rust-toolchain.toml"
+    if rust_toolchain.exists():
+        payload["rust_toolchain"] = rust_toolchain.read_text(encoding="utf-8")
+    return payload
 
 
 def _capture_gpu_inventory() -> dict[str, object]:

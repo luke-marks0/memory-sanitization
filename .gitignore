@@ -4,9 +4,10 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.pose/
+.tmp/
 dist/
 build/
 target/
 results/
 vendor/rust-fil-proofs/.sync-worktree/
-

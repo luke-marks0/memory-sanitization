@@ -427,7 +427,6 @@ The repository shall use the following structure or a structure equivalent in cl
     LICENSE
     THIRD_PARTY_NOTICES.md
     pyproject.toml
-    Cargo.toml
     Makefile
 
     docs/
@@ -1618,13 +1617,12 @@ Use a standard Python package layout with pinned dependencies.
 
 ### 22.2 Native packaging
 
-Use a workspace or crate arrangement that makes native acceleration reproducible.
+If native acceleration is added, use a packaging arrangement that makes it reproducible.
 
 ### 22.3 Python/native integration
 
-The preferred integration mechanism is:
-
-  pyo3 + maturin
+Any future Python/native integration must have a reproducible build path and the
+same parity and CI requirements as the reference implementation.
 
 CUDA modules may be built separately but must integrate into the same parity and CI story.
 
