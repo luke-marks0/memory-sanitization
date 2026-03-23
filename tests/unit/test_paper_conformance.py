@@ -150,19 +150,29 @@ def test_paper_conformance_small_graph_has_canonical_node_and_challenge_ordering
     )
 
 
-def test_paper_conformance_challenge_schedule_is_deterministic_and_sampled_with_replacement() -> None:
-    baseline = _session_plan("11" * 32)
-    changed = _session_plan("22" * 32)
+def test_paper_conformance_challenge_schedule_uses_fresh_verifier_entropy_per_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = replace(
+        _session_plan(),
+        challenge_policy=replace(_session_plan().challenge_policy, rounds_r=4),
+    )
+    sampled_values = iter([5, 5, 1, 3, 0, 7, 2, 2])
+    observed_upper_bounds: list[int] = []
 
-    baseline_schedule = _sample_challenge_indices(baseline)
-    repeated_schedule = _sample_challenge_indices(baseline)
-    changed_schedule = _sample_challenge_indices(changed)
+    def fake_randbelow(upper_bound: int) -> int:
+        observed_upper_bounds.append(upper_bound)
+        return next(sampled_values)
 
-    assert baseline_schedule == repeated_schedule
-    assert baseline_schedule != changed_schedule
-    assert len(baseline_schedule) == baseline.rounds_r
-    assert all(0 <= item < baseline.label_count_m for item in baseline_schedule)
-    assert len(set(baseline_schedule)) < len(baseline_schedule)
+    monkeypatch.setattr("pose.verifier.challenges.secrets.randbelow", fake_randbelow)
+
+    first_schedule = _sample_challenge_indices(plan)
+    second_schedule = _sample_challenge_indices(plan)
+
+    assert first_schedule == [5, 5, 1, 3]
+    assert second_schedule == [0, 7, 2, 2]
+    assert observed_upper_bounds == [plan.label_count_m] * (plan.rounds_r * 2)
+    assert len(set(first_schedule)) < len(first_schedule)
 
 
 def test_paper_conformance_challenge_schedule_requires_sampling_with_replacement() -> None:

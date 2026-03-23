@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from random import Random
 
 import pytest
 
@@ -57,7 +56,7 @@ def _record() -> ResidentSessionRecord:
 
 def test_rechallenge_succeeds_and_releases(monkeypatch: pytest.MonkeyPatch) -> None:
     record = _record()
-    nonce = "feedfacefeedfacefeedfacefeedface"
+    challenge_indices = [5, 1]
     graph = build_pose_db_graph(
         label_count_m=record.label_count_m,
         graph_parameter_n=record.graph_parameter_n,
@@ -65,8 +64,6 @@ def test_rechallenge_succeeds_and_releases(monkeypatch: pytest.MonkeyPatch) -> N
         hash_backend=record.hash_backend,
         label_width_bits=record.label_width_bits,
     )
-    schedule_rng = Random(f"{record.session_id}:{nonce}")
-    challenge_indices = [schedule_rng.randrange(record.label_count_m) for _ in range(2)]
     expected_labels = compute_challenge_labels(
         graph,
         session_seed=record.session_seed_hex,
@@ -107,7 +104,11 @@ def test_rechallenge_succeeds_and_releases(monkeypatch: pytest.MonkeyPatch) -> N
             assert challenge_index == challenge_indices[round_index]
             return next(self._responses)
 
-    monkeypatch.setattr("pose.verifier.rechallenge.secrets.token_hex", lambda _n: nonce)
+    sampled_values = iter(challenge_indices)
+    monkeypatch.setattr(
+        "pose.verifier.challenges.secrets.randbelow",
+        lambda upper_bound: next(sampled_values),
+    )
     monkeypatch.setattr("pose.verifier.rechallenge.discover", lambda _socket: {"capabilities": ["pose-db-fast-phase"]})
     monkeypatch.setattr("pose.verifier.rechallenge.FastPhaseClient", _FakeFastPhaseClient)
     monkeypatch.setattr("pose.verifier.rechallenge.finalize_session", lambda *_args, **_kwargs: None)

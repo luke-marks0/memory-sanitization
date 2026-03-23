@@ -2,16 +2,15 @@ from __future__ import annotations
 
 import os
 import signal
-import secrets
 from dataclasses import replace
 from datetime import UTC, datetime
-from random import Random
 from time import perf_counter
 
 from pose.common.errors import ProtocolError, ResourceFailure
 from pose.common.hashing import sha256_hex
 from pose.graphs import build_pose_db_graph, compute_challenge_labels
 from pose.protocol.result_schema import SessionResult, bootstrap_result
+from pose.verifier.challenges import sample_challenge_indices
 from pose.verifier.grpc_client import FastPhaseClient, cleanup_session, discover, finalize_session
 from pose.verifier.session_store import ResidentSessionRecord, delete_resident_session, write_resident_session
 from pose.verifier.soundness import assess_soundness, soundness_model_label
@@ -73,14 +72,12 @@ def _cleanup_resident_session(record: ResidentSessionRecord) -> str:
     return cleanup_status
 
 
-def _sample_challenge_indices(record: ResidentSessionRecord, *, nonce: str) -> list[int]:
-    if not bool(record.challenge_policy.get("sample_with_replacement", True)):
-        raise ProtocolError("Resident PoSE-DB rechallenge requires sampling with replacement.")
-    rounds_r = int(record.challenge_policy.get("rounds_r", 0))
-    if rounds_r <= 0:
-        raise ProtocolError(f"Resident session rounds_r must be positive, got {rounds_r}")
-    schedule_rng = Random(f"{record.session_id}:{nonce}")
-    return [schedule_rng.randrange(record.label_count_m) for _ in range(rounds_r)]
+def _sample_challenge_indices(record: ResidentSessionRecord) -> list[int]:
+    return sample_challenge_indices(
+        label_count_m=record.label_count_m,
+        rounds_r=int(record.challenge_policy.get("rounds_r", 0)),
+        sample_with_replacement=bool(record.challenge_policy.get("sample_with_replacement", True)),
+    )
 
 
 def _result_from_record(record: ResidentSessionRecord) -> SessionResult:
@@ -175,7 +172,7 @@ def run_host_rechallenge(
             raise ProtocolError("Resident session graph descriptor digest does not match the canonical graph.")
 
         schedule_started = perf_counter()
-        challenge_indices = _sample_challenge_indices(record, nonce=secrets.token_hex(16))
+        challenge_indices = _sample_challenge_indices(record)
         result.timings_ms["challenge_schedule_prep"] = int((perf_counter() - schedule_started) * 1000)
 
         expected_started = perf_counter()

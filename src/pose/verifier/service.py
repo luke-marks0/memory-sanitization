@@ -3,7 +3,6 @@ from __future__ import annotations
 import subprocess
 from dataclasses import replace
 from pathlib import Path
-from random import Random
 from tempfile import TemporaryDirectory
 from time import perf_counter
 
@@ -18,6 +17,7 @@ from pose.graphs import PoseDbGraph, build_pose_db_graph, compute_challenge_labe
 from pose.protocol.codec import load_json_file
 from pose.protocol.messages import LeaseRecord, SessionPlan
 from pose.protocol.result_schema import SessionResult, bootstrap_result
+from pose.verifier.challenges import sample_challenge_indices
 from pose.verifier.grpc_client import (
     cleanup_session,
     discover,
@@ -88,12 +88,11 @@ def _resolve_slot(plan: SessionPlan, challenge_index: int) -> tuple[str, int]:
 
 
 def _sample_challenge_indices(plan: SessionPlan) -> list[int]:
-    if not plan.challenge_policy.sample_with_replacement:
-        raise ProtocolError("PoSE-DB runtime requires uniform sampling with replacement.")
-    if plan.label_count_m <= 0:
-        raise ProtocolError("Session plan label_count_m must be positive.")
-    schedule_rng = Random(plan.plan_root_hex)
-    return [schedule_rng.randrange(plan.label_count_m) for _ in range(plan.rounds_r)]
+    return sample_challenge_indices(
+        label_count_m=plan.label_count_m,
+        rounds_r=plan.rounds_r,
+        sample_with_replacement=plan.challenge_policy.sample_with_replacement,
+    )
 
 
 def _graph_for_plan(plan: SessionPlan) -> PoseDbGraph:
