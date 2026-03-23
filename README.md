@@ -1,82 +1,130 @@
 # pose
 
-Python-first proof of secure erasure over host memory and GPU HBM using the
-graph-based PoSE-DB protocol from the bundled paper.
+Python-first PoSE-DB over verifier-leased host memory and GPU HBM using the
+graph-based PoSE-DB protocol.
 
-## Status
+## What This Repository Implements
 
-The repository is in active cutover to the PoSE-DB design defined in
-`docs/repository-spec.md`.
+The repository one protocol (graph-based PoSE-DB) with two phases:
 
-Current repository policy:
+1. initialization: derive and materialize the session label array into
+   verifier-leased regions;
+2. fast phase: run timed challenge-response rounds over resident labels.
 
-- new work should target PoSE-DB only;
-- the migration is a hard cutover, not a compatibility layer;
-- remaining references to the older design should be treated as migration debt
-  and removed.
+The verifier owns session planning, region leasing, challenge generation,
+deadline enforcement, soundness reporting, and verdict construction.
 
-Progress is tracked in `docs/migration-checklist.md`.
+The prover owns graph traversal during materialization, in-place label
+generation, timed label lookup during the fast phase, and cleanup of temporary
+state.
+
+The repository is Python-first in orchestration and reference semantics.
+Optional native acceleration may be used for performance-critical paths, but it
+must remain semantically identical to the Python implementation.
 
 ## Repository Shape
 
 ```text
 repo/
+  bench_profiles/
   docs/
+    hardware/
+    performance/
     references/
+  native/
   proto/
+    pose/v1/
+  scripts/
   src/pose/
+    benchmarks/
     cli/
     common/
     graphs/
     hashing/
+    protocol/
     prover/
     verifier/
-    benchmarks/
-  bench_profiles/
   tests/
 ```
 
-Important documents:
+## Core Concepts
 
-- `docs/repository-spec.md`
-- `docs/architecture.md`
-- `docs/protocol.md`
-- `docs/security-model.md`
-- `docs/graph-construction.md`
-- `docs/benchmarking.md`
-
-## Target Design
-
-The target repository implements:
-
-- verifier-owned host and HBM leases;
-- implicit depth-robust graph construction;
-- in-place label generation into leased regions;
-- timed single-label challenge rounds;
-- explicit calibration establishing `q < gamma`;
-- honest attacker-budget and claim-scope reporting.
+- challenged state is the label array
+  `sigma = l(o1) || l(o2) || ... || l(om)`;
+- the verifier allocates challenged host and HBM regions, then leases them to
+  the prover;
+- each fast round samples one slot uniformly from `[0, m)`, checks the returned
+  label bytes, and enforces deadline `Delta`;
+- valid production profiles require conservative calibration establishing
+  `q < gamma`;
+- result artifacts report formal claims and operational claims separately.
 
 ## CLI
 
-Current CLI personas live under:
+The main personas are:
 
 - `pose prover ...`
 - `pose verifier ...`
 - `pose bench ...`
 
-The verifier target workflows are:
+Common verifier workflows:
 
-- `pose verifier run --profile ...`
-- `pose verifier rechallenge --session-id ...`
-- `pose verifier verify-record ...`
-- `pose verifier calibrate --profile ...`
+- `pose verifier run --profile dev-small`
+- `pose verifier run --profile single-h100-host-max`
+- `pose verifier rechallenge --session-id <id>`
+- `pose verifier verify-record result.json`
+- `pose verifier calibrate --profile dev-small`
+
+Benchmark workflows:
+
+- `pose bench run --profile dev-small`
+- `pose bench matrix --profiles bench_profiles/`
+- `pose bench summarize results/*.json`
 
 ## Development
 
-The repository is still mid-migration. Until the cutover is complete:
+Setup and validation:
 
-- expect some modules to remain transitional;
-- use the repository spec, not older implementation assumptions, as the source
-  of truth;
-- keep changes aligned with the checklist order so old concepts are removed
-  rather than preserved.
+```bash
+uv sync --extra dev
+make build
+make test
+make test-parity
+make test-graphs
+```
+
+Useful commands:
+
+```bash
+make calibrate PROFILE=dev-small
+make bench PROFILE=dev-small
+```
+
+Available named benchmark profiles live in `bench_profiles/`, including:
+
+- `dev-small`
+- `single-h100-host-max`
+- `single-h100-hbm-max`
+- `single-h100-hybrid-max`
+- `eight-h100-hbm-max`
+- `eight-h100-hybrid-max`
+
+## Documentation
+
+Start here:
+
+- `docs/repository-spec.md`
+- `docs/architecture.md`
+- `docs/protocol.md`
+- `docs/security-model.md`
+- `docs/threat-model.md`
+- `docs/graph-construction.md`
+- `docs/result-schema.md`
+- `docs/benchmarking.md`
+
+Hardware and performance references:
+
+- `docs/hardware/single-h100.md`
+- `docs/hardware/eight-h100.md`
+- `docs/performance/optimization-roadmap.md`
+- `docs/performance/optimization-log.md`
