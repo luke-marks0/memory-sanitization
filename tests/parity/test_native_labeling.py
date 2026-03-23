@@ -16,6 +16,7 @@ from pose.graphs.native_engine import (
     fill_native_gpu_challenge_labels_in_place,
     fill_native_host_challenge_labels_in_place,
     native_cuda_hbm_in_place_available,
+    profile_native_gpu_challenge_labels_in_place,
 )
 
 
@@ -94,6 +95,53 @@ def test_native_in_place_host_fill_matches_reference_label_array(hash_backend: s
 
     assert actual == expected
     assert metrics.scratch_peak_bytes > 0
+
+
+@pytest.mark.skipif(
+    not native_cuda_hbm_in_place_available(),
+    reason="CUDA HBM in-place native engine is not available",
+)
+def test_native_in_place_gpu_profile_reports_arithmetic_schedule_scratch() -> None:
+    try:
+        runtime = get_cuda_runtime()
+    except Exception as error:  # pragma: no cover - environment-specific skip
+        pytest.skip(f"CUDA runtime unavailable: {error}")
+    if runtime.device_count() <= 0:
+        pytest.skip("No CUDA device is available for HBM in-place parity.")
+
+    graph = build_pose_db_graph(
+        label_count_m=17,
+        hash_backend="blake3-xof",
+        label_width_bits=256,
+    )
+    target_len = graph.label_count_m * (graph.label_width_bits // 8)
+    lease = create_gpu_lease(
+        session_id="native-gpu-in-place-profile-test",
+        region_id="gpu-0",
+        device=0,
+        usable_bytes=target_len,
+        cleanup_policy=CleanupPolicy(zeroize=True, verify_zeroization=False),
+        lease_duration_ms=60_000,
+        runtime=runtime,
+    )
+    try:
+        metrics = profile_native_gpu_challenge_labels_in_place(
+            graph,
+            session_seed="99" * 32,
+            device=lease.device,
+            target_pointer=lease.pointer,
+            target_len=target_len,
+        )
+    finally:
+        release_gpu_lease(
+            lease,
+            zeroize=True,
+            verify_zeroization=False,
+        )
+
+    assert metrics.scratch_peak_bytes < 1024
+    assert metrics.profiling_counters["host_merged_plan_builds"] == 0
+    assert metrics.profiling_counters["device_merged_plan_builds"] == 0
 
 
 @pytest.mark.skipif(

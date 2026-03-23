@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ctypes
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib import import_module
 
 from pose.common.errors import ProtocolError
@@ -20,6 +20,7 @@ except Exception as error:  # pragma: no cover - exercised only when the native 
 @dataclass(frozen=True)
 class NativeMaterializationMetrics:
     scratch_peak_bytes: int
+    profiling_counters: dict[str, int] = field(default_factory=dict)
 
 
 def native_label_engine_available() -> bool:
@@ -49,6 +50,23 @@ def _session_seed_bytes(session_seed: bytes | str) -> bytes:
     if isinstance(session_seed, bytes):
         return session_seed
     return bytes.fromhex(session_seed)
+
+
+def _coerce_native_materialization_metrics(payload: object) -> NativeMaterializationMetrics:
+    if isinstance(payload, dict):
+        scratch_peak_bytes = int(payload.get("scratch_peak_bytes", 0))
+        counters_payload = payload.get("profiling_counters", {})
+        if not isinstance(counters_payload, dict):
+            raise ProtocolError("Native profiling counters payload must be a dictionary.")
+        profiling_counters = {
+            str(key): int(value)
+            for key, value in counters_payload.items()
+        }
+        return NativeMaterializationMetrics(
+            scratch_peak_bytes=scratch_peak_bytes,
+            profiling_counters=profiling_counters,
+        )
+    return NativeMaterializationMetrics(scratch_peak_bytes=int(payload))
 
 
 def compute_native_node_labels_buffer(
@@ -94,7 +112,7 @@ def stream_native_materialization(
     writer: Callable[[bytes], None],
 ) -> NativeMaterializationMetrics:
     native = _require_native_module()
-    scratch_peak_bytes = int(
+    payload = (
         native.stream_materialize_challenge_labels(
             graph.label_count_m,
             graph.graph_parameter_n,
@@ -105,7 +123,7 @@ def stream_native_materialization(
             writer,
         )
     )
-    return NativeMaterializationMetrics(scratch_peak_bytes=scratch_peak_bytes)
+    return _coerce_native_materialization_metrics(payload)
 
 
 def fill_native_host_challenge_labels_in_place(
@@ -124,7 +142,7 @@ def fill_native_host_challenge_labels_in_place(
         raise ProtocolError(
             "In-place native host materialization buffer size must equal label_count_m * label_width_bytes."
         )
-    scratch_peak_bytes = int(
+    payload = (
         native.fill_challenge_label_array_at_address(
             graph.label_count_m,
             graph.graph_parameter_n,
@@ -136,7 +154,7 @@ def fill_native_host_challenge_labels_in_place(
             view.nbytes,
         )
     )
-    return NativeMaterializationMetrics(scratch_peak_bytes=scratch_peak_bytes)
+    return _coerce_native_materialization_metrics(payload)
 
 
 def fill_native_gpu_challenge_labels_in_place(
@@ -148,7 +166,7 @@ def fill_native_gpu_challenge_labels_in_place(
     target_len: int,
 ) -> NativeMaterializationMetrics:
     native = _require_native_module()
-    scratch_peak_bytes = int(
+    payload = (
         native.fill_challenge_label_array_on_gpu(
             graph.label_count_m,
             graph.graph_parameter_n,
@@ -161,4 +179,30 @@ def fill_native_gpu_challenge_labels_in_place(
             int(target_len),
         )
     )
-    return NativeMaterializationMetrics(scratch_peak_bytes=scratch_peak_bytes)
+    return _coerce_native_materialization_metrics(payload)
+
+
+def profile_native_gpu_challenge_labels_in_place(
+    graph: PoseDbGraph,
+    *,
+    session_seed: bytes | str,
+    device: int,
+    target_pointer: int,
+    target_len: int,
+) -> NativeMaterializationMetrics:
+    native = _require_native_module()
+    profile_fn = getattr(native, "profile_challenge_label_array_on_gpu", None)
+    if profile_fn is None:
+        raise ProtocolError("Native GPU HBM profiling is unavailable in this build.")
+    payload = profile_fn(
+        graph.label_count_m,
+        graph.graph_parameter_n,
+        graph.hash_backend,
+        graph.label_width_bits,
+        _session_seed_bytes(session_seed),
+        graph.graph_descriptor_digest,
+        int(device),
+        int(target_pointer),
+        int(target_len),
+    )
+    return _coerce_native_materialization_metrics(payload)

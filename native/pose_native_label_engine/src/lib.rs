@@ -5,7 +5,7 @@ use std::os::raw::c_char;
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyModule};
+use pyo3::types::{PyBytes, PyDict, PyModule};
 use sha3::digest::{ExtendableOutput, Update, XofReader};
 use sha3::Shake256;
 use zeroize::Zeroize;
@@ -14,6 +14,39 @@ const DOMAIN_NAMESPACE: &[u8] = b"pose-db";
 const ENCODING_VERSION_BYTES: [u8; 4] = 1u32.to_be_bytes();
 const SOURCE_LABEL_DOMAIN: &str = "pose-db/label/source/v1";
 const INTERNAL_LABEL_DOMAIN: &str = "pose-db/label/internal/v1";
+
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+struct CudaHbmProfileCounters {
+    total_kernel_launches: u64,
+    total_blocks_launched: u64,
+    total_threads_launched: u64,
+    launch_source_labels: u64,
+    launch_internal1_copy: u64,
+    launch_internal1_inplace_contiguous: u64,
+    launch_internal1_inplace_indexed: u64,
+    launch_internal2_inplace_contiguous: u64,
+    launch_internal2_inplace_indexed: u64,
+    launch_combine_buffers: u64,
+    launch_connector_inplace_cooperative: u64,
+    launch_connector_copy_cooperative: u64,
+    launch_merged_center_ingress_cooperative: u64,
+    cooperative_launch_attempts: u64,
+    cooperative_launch_successes: u64,
+    cooperative_launch_fallbacks: u64,
+    device_to_device_copies: u64,
+    device_to_device_copy_bytes: u64,
+    device_synchronizes: u64,
+    host_merged_plan_builds: u64,
+    device_merged_plan_builds: u64,
+    standalone_base_calls: u64,
+    standalone_right_prefix_calls: u64,
+    connected_full_calls: u64,
+    connected_prefix_calls: u64,
+    connector_from_inputs_calls: u64,
+    connector_in_place_calls: u64,
+    merged_center_ingress_calls: u64,
+}
 
 #[cfg(pose_cuda_hbm_available)]
 unsafe extern "C" {
@@ -29,6 +62,7 @@ unsafe extern "C" {
         target_pointer: *mut std::ffi::c_void,
         target_len: usize,
         scratch_peak_bytes_out: *mut u64,
+        profile_out: *mut CudaHbmProfileCounters,
         error_buf: *mut c_char,
         error_buf_len: usize,
     ) -> i32;
@@ -637,12 +671,69 @@ impl LabelOracle {
     }
 }
 
+#[derive(Clone, Copy)]
+struct MergedIndexArithmetic {
+    dimension: usize,
+    width: usize,
+}
+
+impl MergedIndexArithmetic {
+    fn new(dimension: usize) -> Self {
+        Self {
+            dimension,
+            width: 1usize << dimension,
+        }
+    }
+
+    fn width(&self) -> usize {
+        self.width
+    }
+
+    fn ingress_index(&self, layer: usize, offset: usize) -> usize {
+        debug_assert!(layer <= self.dimension);
+        debug_assert!(offset < self.width);
+        if layer < self.dimension {
+            return (layer * self.width) + offset;
+        }
+        (self.dimension * self.width) + Self::final_ingress_displacement(self.dimension, offset)
+    }
+
+    fn center_index(&self, layer: usize, offset: usize) -> usize {
+        debug_assert!(layer <= self.dimension);
+        debug_assert!(offset < self.width);
+        let remaining_dimension = self.dimension - layer;
+        let block_width = 1usize << remaining_dimension;
+        ((self.dimension + layer) * self.width)
+            + (1usize << layer)
+            + (offset / block_width)
+            + ((1usize << layer) * Self::final_ingress_displacement(remaining_dimension, offset % block_width))
+    }
+
+    fn final_ingress_displacement(mut dimension: usize, mut offset: usize) -> usize {
+        let mut displacement = 0usize;
+        let mut scale = 1usize;
+        while dimension > 0 {
+            let half_width = 1usize << (dimension - 1);
+            if offset < half_width {
+                return displacement + (scale * (offset << 1));
+            }
+            displacement += scale * (1usize << dimension);
+            scale <<= 1;
+            offset -= half_width;
+            dimension -= 1;
+        }
+        displacement
+    }
+}
+
+#[cfg(test)]
 struct MergedPlan {
     width: usize,
     ingress_indices: Vec<u32>,
     center_indices: Vec<u32>,
 }
 
+#[cfg(test)]
 impl MergedPlan {
     fn build(dimension: usize) -> Self {
         let width = 1usize << dimension;
@@ -731,12 +822,9 @@ impl MergedPlan {
     fn center_index(&self, layer: usize, offset: usize) -> usize {
         self.center_indices[(layer * self.width) + offset] as usize
     }
-
-    fn accounted_bytes(&self) -> usize {
-        self.ingress_indices.len() * size_of::<u32>() + self.center_indices.len() * size_of::<u32>()
-    }
 }
 
+#[cfg(test)]
 fn release_local_successor(
     local_successor: usize,
     remaining_indegree: &mut [u8],
@@ -753,7 +841,6 @@ struct InPlaceChallengeLabeler<'a> {
     spec: &'a NativeSpec,
     counts: &'a GraphCounts,
     oracle: LabelOracle,
-    merged_plans: Vec<MergedPlan>,
     temp0: Vec<u8>,
     temp1: Vec<u8>,
     peak_scratch_bytes: usize,
@@ -762,16 +849,13 @@ struct InPlaceChallengeLabeler<'a> {
 impl<'a> InPlaceChallengeLabeler<'a> {
     fn new(spec: &'a NativeSpec, counts: &'a GraphCounts) -> PyResult<Self> {
         let oracle = LabelOracle::new(spec)?;
-        let merged_plans: Vec<MergedPlan> = (0..=spec.graph_parameter_n).map(MergedPlan::build).collect();
         let temp0 = vec![0u8; spec.output_bytes];
         let temp1 = vec![0u8; spec.output_bytes];
-        let merged_plan_bytes: usize = merged_plans.iter().map(MergedPlan::accounted_bytes).sum();
-        let peak_scratch_bytes = oracle.accounted_bytes() + temp0.len() + temp1.len() + merged_plan_bytes;
+        let peak_scratch_bytes = oracle.accounted_bytes() + temp0.len() + temp1.len();
         Ok(Self {
             spec,
             counts,
             oracle,
-            merged_plans,
             temp0,
             temp1,
             peak_scratch_bytes,
@@ -799,10 +883,6 @@ impl<'a> InPlaceChallengeLabeler<'a> {
 
     fn slot_count_for(buffer: &[u8], output_bytes: usize) -> usize {
         buffer.len() / output_bytes
-    }
-
-    fn merged_plan(&self, dimension: usize) -> &MergedPlan {
-        &self.merged_plans[dimension]
     }
 
     fn butterfly_layers_in_place_simple(
@@ -890,12 +970,13 @@ impl<'a> InPlaceChallengeLabeler<'a> {
         start_index: usize,
     ) -> PyResult<()> {
         let output_bytes = self.slot_bytes();
-        let width = 1usize << dimension;
+        let merged_indices = MergedIndexArithmetic::new(dimension);
+        let width = merged_indices.width();
 
         for offset in 0..width {
             self.temp0.copy_from_slice(Self::slot(ingress_workspace, output_bytes, offset));
             let out_slot = Self::slot_mut(ingress_workspace, output_bytes, offset);
-            let ingress_index = self.merged_plan(dimension).ingress_index(0, offset);
+            let ingress_index = merged_indices.ingress_index(0, offset);
             self.oracle.internal_label_1_into(
                 start_index + ingress_index,
                 &self.temp0,
@@ -913,7 +994,7 @@ impl<'a> InPlaceChallengeLabeler<'a> {
                     self.temp1.copy_from_slice(Self::slot(ingress_workspace, output_bytes, right));
                     {
                         let out_left = Self::slot_mut(ingress_workspace, output_bytes, left);
-                        let ingress_index = self.merged_plan(dimension).ingress_index(layer, left);
+                        let ingress_index = merged_indices.ingress_index(layer, left);
                         self.oracle.internal_label_2_into(
                             start_index + ingress_index,
                             &self.temp0,
@@ -923,7 +1004,7 @@ impl<'a> InPlaceChallengeLabeler<'a> {
                     }
                     {
                         let out_right = Self::slot_mut(ingress_workspace, output_bytes, right);
-                        let ingress_index = self.merged_plan(dimension).ingress_index(layer, right);
+                        let ingress_index = merged_indices.ingress_index(layer, right);
                         self.oracle.internal_label_2_into(
                             start_index + ingress_index,
                             &self.temp0,
@@ -939,7 +1020,7 @@ impl<'a> InPlaceChallengeLabeler<'a> {
             self.temp0.copy_from_slice(Self::slot(primary_inputs, output_bytes, offset));
             self.temp1.copy_from_slice(Self::slot(ingress_workspace, output_bytes, offset));
             let out_slot = Self::slot_mut(ingress_workspace, output_bytes, offset);
-            let center_index = self.merged_plan(dimension).center_index(0, offset);
+            let center_index = merged_indices.center_index(0, offset);
             self.oracle.internal_label_2_into(
                 start_index + center_index,
                 &self.temp0,
@@ -958,7 +1039,7 @@ impl<'a> InPlaceChallengeLabeler<'a> {
                     self.temp1.copy_from_slice(Self::slot(ingress_workspace, output_bytes, right));
                     {
                         let out_left = Self::slot_mut(ingress_workspace, output_bytes, left);
-                        let center_index = self.merged_plan(dimension).center_index(layer, left);
+                        let center_index = merged_indices.center_index(layer, left);
                         self.oracle.internal_label_2_into(
                             start_index + center_index,
                             &self.temp0,
@@ -968,7 +1049,7 @@ impl<'a> InPlaceChallengeLabeler<'a> {
                     }
                     {
                         let out_right = Self::slot_mut(ingress_workspace, output_bytes, right);
-                        let center_index = self.merged_plan(dimension).center_index(layer, right);
+                        let center_index = merged_indices.center_index(layer, right);
                         self.oracle.internal_label_2_into(
                             start_index + center_index,
                             &self.temp0,
@@ -1292,12 +1373,12 @@ fn fill_challenge_label_array_at_address_native(
 }
 
 #[cfg(pose_cuda_hbm_available)]
-fn fill_challenge_label_array_on_gpu_native(
+fn fill_challenge_label_array_on_gpu_profile_native(
     spec: &NativeSpec,
     device: i32,
     target_pointer: usize,
     target_len: usize,
-) -> PyResult<usize> {
+) -> PyResult<(usize, CudaHbmProfileCounters)> {
     if !matches!(spec.hash_backend, HashBackend::Blake3Xof) {
         return Err(PyRuntimeError::new_err(
             "CUDA HBM in-place labeling currently supports only blake3-xof.",
@@ -1309,6 +1390,7 @@ fn fill_challenge_label_array_on_gpu_native(
         ));
     }
     let mut scratch_peak_bytes = 0u64;
+    let mut profile_counters = CudaHbmProfileCounters::default();
     let mut error_buf = vec![0u8; 512];
     let status = unsafe {
         pose_cuda_fill_challenge_labels_in_place_blake3(
@@ -1323,6 +1405,7 @@ fn fill_challenge_label_array_on_gpu_native(
             target_pointer as *mut std::ffi::c_void,
             target_len,
             &mut scratch_peak_bytes as *mut u64,
+            &mut profile_counters as *mut CudaHbmProfileCounters,
             error_buf.as_mut_ptr().cast::<c_char>(),
             error_buf.len(),
         )
@@ -1340,20 +1423,105 @@ fn fill_challenge_label_array_on_gpu_native(
         };
         return Err(PyRuntimeError::new_err(message));
     }
-    usize::try_from(scratch_peak_bytes)
-        .map_err(|_| PyRuntimeError::new_err("CUDA HBM scratch accounting overflowed usize."))
+    let scratch_peak_bytes = usize::try_from(scratch_peak_bytes)
+        .map_err(|_| PyRuntimeError::new_err("CUDA HBM scratch accounting overflowed usize."))?;
+    Ok((scratch_peak_bytes, profile_counters))
 }
 
 #[cfg(not(pose_cuda_hbm_available))]
-fn fill_challenge_label_array_on_gpu_native(
+fn fill_challenge_label_array_on_gpu_profile_native(
     _spec: &NativeSpec,
     _device: i32,
     _target_pointer: usize,
     _target_len: usize,
-) -> PyResult<usize> {
+) -> PyResult<(usize, CudaHbmProfileCounters)> {
     Err(PyRuntimeError::new_err(
         "CUDA HBM in-place label engine is unavailable in this build.",
     ))
+}
+
+fn fill_challenge_label_array_on_gpu_native(
+    spec: &NativeSpec,
+    device: i32,
+    target_pointer: usize,
+    target_len: usize,
+) -> PyResult<usize> {
+    fill_challenge_label_array_on_gpu_profile_native(spec, device, target_pointer, target_len)
+        .map(|(scratch_peak_bytes, _profile_counters)| scratch_peak_bytes)
+}
+
+fn build_cuda_hbm_profile_payload(
+    py: Python<'_>,
+    scratch_peak_bytes: usize,
+    counters: CudaHbmProfileCounters,
+) -> PyResult<Py<PyDict>> {
+    let payload = PyDict::new(py);
+    payload.set_item("scratch_peak_bytes", scratch_peak_bytes)?;
+    let profiling_counters = PyDict::new(py);
+    for (key, value) in [
+        ("total_kernel_launches", counters.total_kernel_launches),
+        ("total_blocks_launched", counters.total_blocks_launched),
+        ("total_threads_launched", counters.total_threads_launched),
+        ("launch_source_labels", counters.launch_source_labels),
+        ("launch_internal1_copy", counters.launch_internal1_copy),
+        (
+            "launch_internal1_inplace_contiguous",
+            counters.launch_internal1_inplace_contiguous,
+        ),
+        (
+            "launch_internal1_inplace_indexed",
+            counters.launch_internal1_inplace_indexed,
+        ),
+        (
+            "launch_internal2_inplace_contiguous",
+            counters.launch_internal2_inplace_contiguous,
+        ),
+        (
+            "launch_internal2_inplace_indexed",
+            counters.launch_internal2_inplace_indexed,
+        ),
+        ("launch_combine_buffers", counters.launch_combine_buffers),
+        (
+            "launch_connector_inplace_cooperative",
+            counters.launch_connector_inplace_cooperative,
+        ),
+        (
+            "launch_connector_copy_cooperative",
+            counters.launch_connector_copy_cooperative,
+        ),
+        (
+            "launch_merged_center_ingress_cooperative",
+            counters.launch_merged_center_ingress_cooperative,
+        ),
+        ("cooperative_launch_attempts", counters.cooperative_launch_attempts),
+        ("cooperative_launch_successes", counters.cooperative_launch_successes),
+        ("cooperative_launch_fallbacks", counters.cooperative_launch_fallbacks),
+        ("device_to_device_copies", counters.device_to_device_copies),
+        (
+            "device_to_device_copy_bytes",
+            counters.device_to_device_copy_bytes,
+        ),
+        ("device_synchronizes", counters.device_synchronizes),
+        ("host_merged_plan_builds", counters.host_merged_plan_builds),
+        ("device_merged_plan_builds", counters.device_merged_plan_builds),
+        ("standalone_base_calls", counters.standalone_base_calls),
+        (
+            "standalone_right_prefix_calls",
+            counters.standalone_right_prefix_calls,
+        ),
+        ("connected_full_calls", counters.connected_full_calls),
+        ("connected_prefix_calls", counters.connected_prefix_calls),
+        ("connector_from_inputs_calls", counters.connector_from_inputs_calls),
+        ("connector_in_place_calls", counters.connector_in_place_calls),
+        (
+            "merged_center_ingress_calls",
+            counters.merged_center_ingress_calls,
+        ),
+    ] {
+        profiling_counters.set_item(key, value)?;
+    }
+    payload.set_item("profiling_counters", profiling_counters)?;
+    Ok(payload.unbind())
 }
 
 fn stream_materialize_challenge_labels_native(
@@ -1580,8 +1748,67 @@ fn fill_challenge_label_array_on_gpu(
 }
 
 #[pyfunction]
+fn profile_challenge_label_array_on_gpu(
+    py: Python<'_>,
+    label_count_m: usize,
+    graph_parameter_n: usize,
+    hash_backend: &str,
+    label_width_bits: usize,
+    session_seed: &[u8],
+    graph_descriptor_digest: &str,
+    device: i32,
+    target_pointer: usize,
+    target_len: usize,
+) -> PyResult<Py<PyDict>> {
+    let spec = NativeSpec::from_inputs(
+        label_count_m,
+        graph_parameter_n,
+        hash_backend,
+        label_width_bits,
+        session_seed,
+        graph_descriptor_digest,
+    )?;
+    let (scratch_peak_bytes, counters) = py.detach(|| {
+        fill_challenge_label_array_on_gpu_profile_native(&spec, device, target_pointer, target_len)
+    })?;
+    build_cuda_hbm_profile_payload(
+        py,
+        scratch_peak_bytes,
+        counters,
+    )
+}
+
+#[pyfunction]
 fn native_engine_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MergedIndexArithmetic, MergedPlan};
+
+    #[test]
+    fn arithmetic_indices_match_table_builder() {
+        for dimension in 0..=15 {
+            let width = 1usize << dimension;
+            let arithmetic = MergedIndexArithmetic::new(dimension);
+            let table = MergedPlan::build(dimension);
+            for layer in 0..=dimension {
+                for offset in 0..width {
+                    assert_eq!(
+                        arithmetic.ingress_index(layer, offset),
+                        table.ingress_index(layer, offset),
+                        "ingress mismatch at dimension={dimension} layer={layer} offset={offset}",
+                    );
+                    assert_eq!(
+                        arithmetic.center_index(layer, offset),
+                        table.center_index(layer, offset),
+                        "center mismatch at dimension={dimension} layer={layer} offset={offset}",
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[pymodule]
@@ -1592,6 +1819,7 @@ fn pose_native_label_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fill_challenge_label_array_at_address, m)?)?;
     m.add_function(wrap_pyfunction!(cuda_hbm_in_place_available, m)?)?;
     m.add_function(wrap_pyfunction!(fill_challenge_label_array_on_gpu, m)?)?;
+    m.add_function(wrap_pyfunction!(profile_challenge_label_array_on_gpu, m)?)?;
     m.add_function(wrap_pyfunction!(native_engine_version, m)?)?;
     Ok(())
 }

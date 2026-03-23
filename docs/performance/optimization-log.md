@@ -2293,6 +2293,725 @@ PYTHONPATH=src .venv/bin/python -m py_compile \
   representative larger sessions; it is not itself a target for accepted
   runtime specialization
 
+## Entry 020: Exact Native Scratch Breakdown Audit
+
+- date:
+  2026-03-23
+- git head:
+  `39199965abc417b228298799ec2b0fd5e50dbb69`
+- status:
+  accepted
+- hypothesis:
+  the current native scratch peaks should be decomposable exactly into a small
+  number of accounted structures; if that is true, the next optimization
+  target should be obvious and the log should record it explicitly instead of
+  treating "scratch" as an opaque bucket.
+
+#### Change Scope
+
+- files:
+  `scripts/profile_scratch_breakdown.py`,
+  `docs/performance/optimization-log.md`
+- profiles benchmarked:
+  none; this round analyzes the current accepted host and HBM artifacts rather
+  than changing runtime behavior
+
+#### Commands
+
+```bash
+PYTHONPATH=src .venv/bin/python -m py_compile \
+  scripts/profile_scratch_breakdown.py
+
+PYTHONPATH=src .venv/bin/python scripts/profile_scratch_breakdown.py \
+  --mode host-in-place \
+  --result-artifact .pose/benchmarks/single-host-2mib/20260323T100342Z/run-001.result.json
+
+PYTHONPATH=src .venv/bin/python scripts/profile_scratch_breakdown.py \
+  --mode cuda-hbm-in-place \
+  --result-artifact .pose/benchmarks/single-h100-hbm-2mib/20260323T112146Z/run-001.result.json
+```
+
+#### Artifacts Analyzed
+
+- current host in-place artifact:
+  `.pose/benchmarks/single-host-2mib/20260323T100342Z/run-001.result.json`
+- current CUDA HBM in-place artifact:
+  `.pose/benchmarks/single-h100-hbm-2mib/20260323T112146Z/run-001.result.json`
+
+#### Exact Breakdown
+
+Current host native in-place scratch:
+
+- covered bytes:
+  `2,097,152`
+- scratch peak bytes:
+  `7,865,015`
+- scratch / covered:
+  `3.7503x`
+
+| component | bytes | share of scratch |
+| --- | ---: | ---: |
+| merged_plan_index_tables | 7,864,328 | 99.9913% |
+| label_oracle_payloads | 623 | 0.0079% |
+| temp_label_buffers | 64 | 0.0008% |
+
+Host-path details from the script:
+
+- the reported scratch peak matched exactly
+- the merged-plan tables cover dimensions `0..15`
+- the three largest plan tables are dimension `15 = 4,194,304` bytes,
+  dimension `14 = 1,966,080` bytes, and dimension `13 = 917,504` bytes;
+  together they already account for about `89.99%` of the full scratch peak
+- the non-plan residual is only `687` bytes total:
+  `623` bytes of label-oracle payload templates plus two `32`-byte temp label
+  buffers
+
+Current CUDA HBM in-place scratch:
+
+- covered bytes:
+  `2,097,152`
+- scratch peak bytes:
+  `7,340,252`
+- scratch / covered:
+  `3.5001x`
+
+| component | bytes | share of scratch |
+| --- | ---: | ---: |
+| host_merged_plan_cache | 3,670,024 | 49.9986% |
+| device_merged_plan_cache | 3,670,024 | 49.9986% |
+| pose_oracle_config | 204 | 0.0028% |
+
+HBM-path details from the script:
+
+- the reported scratch peak matched exactly
+- the current recursion instantiates merged-plan dimensions `0..14`
+- the same per-dimension plan tables are cached on both host and device, which
+  is why the current HBM scratch is almost exactly a `2x` duplication of the
+  per-side plan bytes plus a `204`-byte `PoseOracleConfig`
+- the largest per-side plan tables are dimension `14 = 1,966,080` bytes,
+  dimension `13 = 917,504` bytes, and dimension `12 = 425,984` bytes; across
+  host and device together those three dimensions account for about `90.18%`
+  of the full HBM scratch peak
+
+#### Correctness Gates
+
+- compile checks:
+  `py_compile` passed for `scripts/profile_scratch_breakdown.py`
+- accounting checks:
+  the new script reproduced the reported `scratch_peak_bytes` exactly for both
+  current artifacts
+- claim-scope checks:
+  both analyzed artifacts still report `declared_stage_copy_bytes=0`, so the
+  extra scratch identified here is scheduler metadata and fixed configuration,
+  not a surviving label shadow entering the fast phase
+
+#### Decision
+
+- accepted because:
+  the current "extra scratch" story is now exact instead of approximate
+- profiling conclusion:
+  current host scratch is effectively all merged-plan index tables; current HBM
+  scratch is those same tables duplicated across host and device plus a tiny
+  fixed config block
+- follow-up:
+  meaningful scratch reduction now clearly means compressing, generating
+  lazily, or eliminating merged-plan index tables; micro-optimizing hash
+  payload templates or temp label buffers will not materially change the peak
+
+## Entry 021: HBM Internal Profiling Counters And Direct Microbenchmark Harness
+
+- date:
+  2026-03-23
+- git head:
+  `39199965abc417b228298799ec2b0fd5e50dbb69`
+- status:
+  accepted
+- hypothesis:
+  the current direct CUDA HBM path needs internal observability before another
+  optimization round; if the runtime can expose per-kernel launch counts,
+  recursion counts, copy/sync counts, and a direct native microbenchmark, then
+  future HBM changes can be judged on the real bottleneck instead of guesswork.
+
+#### Change Scope
+
+- files:
+  `native/pose_native_label_engine/src/hbm_inplace.cu`,
+  `native/pose_native_label_engine/src/lib.rs`,
+  `src/pose/graphs/native_engine.py`,
+  `src/pose/benchmarks/native_hbm_microbench.py`,
+  `tests/unit/test_native_hbm_microbench.py`
+- profiles benchmarked:
+  direct native HBM microbenchmark, restored `single-h100-hbm-2mib`
+
+#### Commands
+
+```bash
+scripts/build_native_label_engine.sh
+
+PYTHONPATH=src .venv/bin/python -m py_compile \
+  src/pose/graphs/native_engine.py \
+  src/pose/benchmarks/native_hbm_microbench.py \
+  tests/unit/test_native_hbm_microbench.py
+
+PYTHONPATH=src .venv/bin/python -m pytest \
+  tests/unit/test_native_hbm_microbench.py \
+  tests/parity/test_native_labeling.py \
+  tests/unit/test_grpc_pose_db_runtime.py -q
+
+PYTHONPATH=src .venv/bin/python -m pose.benchmarks.native_hbm_microbench \
+  --label-count-m 65536 \
+  --graph-parameter-n 15 \
+  --repetitions 1 \
+  --output-json /tmp/native-hbm-microbench-restored.json
+
+PYTHONPATH=src .venv/bin/python -m pose.cli.main bench run \
+  --profile /tmp/single-h100-hbm-2mib.yaml
+```
+
+#### Artifacts
+
+- direct native microbenchmark:
+  `.pose/benchmarks/native-hbm-microbench/20260323T131307Z-restored.json`
+- restored real-H100 HBM benchmark:
+  `.pose/benchmarks/single-h100-hbm-2mib/20260323T131307Z`
+
+#### Observed Metrics
+
+Direct native microbenchmark on `m=65536`, `n=15`:
+
+- `gpu_in_place.wall_ms = 21,629.65`
+- `host_in_place.wall_ms = 3,675.32`
+- `stream_gpu_writer.wall_ms = 4,920.58`
+- `gpu_in_place.scratch_peak_bytes = 7,340,252`
+- `gpu_in_place.total_kernel_launches = 655,016`
+- `gpu_in_place.cooperative_launch_successes = 0`
+- `gpu_in_place.cooperative_launch_fallbacks = 131,070`
+
+Restored end-to-end HBM benchmark:
+
+- `label_generation = 21,944 ms`
+- `total = 26,974 ms`
+- `scratch_peak_bytes = 7,340,252`
+- `declared_stage_copy_bytes = 0`
+
+#### Correctness Gates
+
+- tests:
+  `tests/unit/test_native_hbm_microbench.py`,
+  `tests/parity/test_native_labeling.py`, and
+  `tests/unit/test_grpc_pose_db_runtime.py` all passed after the native rebuild
+- compile checks:
+  `py_compile` passed for the new Python wrapper and benchmark harness modules
+- hardware checks:
+  the restored `single-h100-hbm-2mib` run remained `SUCCESS` with
+  `declared_stage_copy_bytes=0`
+
+#### Decision
+
+- accepted because:
+  this round adds observability without changing the default HBM runtime path
+- profiling conclusion:
+  the current direct CUDA HBM implementation is still dominated by a very large
+  host-orchestrated kernel schedule, not by copy-to-HBM traffic or scratch
+  spikes
+- follow-up:
+  future HBM optimization rounds should compare against the restored
+  `20260323T131307Z` artifacts in the same measurement window rather than the
+  older `20260323T110723Z` run, because the machine was materially slower later
+  in the day even after the runtime was restored
+
+## Entry 022: Small-Width Merged-Center Block-Fused Round
+
+- date:
+  2026-03-23
+- git head:
+  `39199965abc417b228298799ec2b0fd5e50dbb69`
+- status:
+  rejected and reverted
+- hypothesis:
+  replacing the many indexed merged-center layer launches on small-width HBM
+  subproblems with one ordinary block-local fused kernel should reduce launch
+  overhead enough to improve the direct CUDA path without increasing scratch.
+
+#### Change Scope
+
+- files:
+  `native/pose_native_label_engine/src/hbm_inplace.cu`,
+  `native/pose_native_label_engine/src/lib.rs`
+- profiles benchmarked:
+  direct native HBM microbenchmark, `single-h100-hbm-2mib`
+
+#### Before Artifacts
+
+- restored microbenchmark anchor:
+  `.pose/benchmarks/native-hbm-microbench/20260323T131307Z-restored.json`
+- restored end-to-end HBM anchor:
+  `.pose/benchmarks/single-h100-hbm-2mib/20260323T131307Z`
+
+#### After Artifacts
+
+- rejected block-fused microbenchmark:
+  `.pose/benchmarks/native-hbm-microbench/20260323T130300Z-round1.json`
+- rejected block-fused HBM artifact:
+  `.pose/benchmarks/single-h100-hbm-2mib/20260323T130300Z`
+
+#### Metric Delta
+
+Compared against the restored current-window anchor:
+
+| metric | before | after | delta |
+| --- | ---: | ---: | ---: |
+| micro `gpu_in_place` ms | 21,629.65 | 22,301.13 | +671.49 (+3.10%) |
+| micro `total_kernel_launches` | 655,016 | 279,306 | -375,710 (-57.36%) |
+| label_generation ms | 21,944 | 22,476 | +532 (+2.42%) |
+| total ms | 26,974 | 26,787 | -187 (-0.69%) |
+| scratch_peak_bytes | 7,340,252 | 7,340,252 | 0 (+0.00%) |
+
+#### Correctness Gates
+
+- tests:
+  the focused native benchmark, parity, and grpc runtime slices stayed green
+  before the revert
+- hardware checks:
+  the real H100 run still returned `SUCCESS` with `declared_stage_copy_bytes=0`
+
+#### Decision
+
+- rejected because:
+  the launch-count reduction did not translate into a speedup on the HBM-path
+  target metric; `label_generation` and the direct microbenchmark both got
+  slower even though the schedule launched far fewer kernels
+- conclusion:
+  a one-block fused merge kernel is not enough by itself; it removes launches
+  but makes each small merged-center subproblem too expensive
+
+## Entry 023: Direct Predecessor-Pointer CUDA Round
+
+- date:
+  2026-03-23
+- git head:
+  `39199965abc417b228298799ec2b0fd5e50dbb69`
+- status:
+  rejected and reverted
+- hypothesis:
+  removing explicit predecessor staging arrays from the active CUDA kernels
+  should lower per-thread local-state pressure and recover runtime without
+  changing the existing launch schedule or scratch shape.
+
+#### Change Scope
+
+- files:
+  `native/pose_native_label_engine/src/hbm_inplace.cu`
+- profiles benchmarked:
+  direct native HBM microbenchmark, `single-h100-hbm-2mib`
+
+#### Before Artifacts
+
+- restored microbenchmark anchor:
+  `.pose/benchmarks/native-hbm-microbench/20260323T131307Z-restored.json`
+- restored end-to-end HBM anchor:
+  `.pose/benchmarks/single-h100-hbm-2mib/20260323T131307Z`
+
+#### After Artifacts
+
+- rejected direct-pointer microbenchmark:
+  `.pose/benchmarks/native-hbm-microbench/20260323T130658Z-round2.json`
+- rejected direct-pointer HBM artifact:
+  `.pose/benchmarks/single-h100-hbm-2mib/20260323T130658Z`
+
+#### Metric Delta
+
+Compared against the restored current-window anchor:
+
+| metric | before | after | delta |
+| --- | ---: | ---: | ---: |
+| micro `gpu_in_place` ms | 21,629.65 | 21,857.56 | +227.91 (+1.05%) |
+| micro `total_kernel_launches` | 655,016 | 655,016 | 0 (+0.00%) |
+| label_generation ms | 21,944 | 22,128 | +184 (+0.84%) |
+| total ms | 26,974 | 26,518 | -456 (-1.69%) |
+| scratch_peak_bytes | 7,340,252 | 7,340,252 | 0 (+0.00%) |
+
+#### Correctness Gates
+
+- tests:
+  the focused native benchmark, parity, and grpc runtime slices stayed green
+  before the revert
+- hardware checks:
+  the real H100 run still returned `SUCCESS` with `declared_stage_copy_bytes=0`
+
+#### Decision
+
+- rejected because:
+  the direct pointer change did not improve the HBM-path target metric; the
+  direct microbenchmark and `label_generation` both remained slower than the
+  restored current-window baseline
+- conclusion:
+  local predecessor staging is not the dominant problem in the current active
+  kernels, or the direct-pointer version simply traded that pressure for more
+  expensive memory reads
+
+## Entry 024: Shared-Memory Small-Width Merged-Center Round
+
+- date:
+  2026-03-23
+- git head:
+  `39199965abc417b228298799ec2b0fd5e50dbb69`
+- status:
+  rejected and reverted
+- hypothesis:
+  if the small-width merged-center fusion keeps both labels and index tables in
+  shared memory, then the HBM path might keep the launch-count win from Entry
+  022 without paying the same per-subproblem global-memory cost.
+
+#### Change Scope
+
+- files:
+  `native/pose_native_label_engine/src/hbm_inplace.cu`,
+  `native/pose_native_label_engine/src/lib.rs`
+- profiles benchmarked:
+  direct native HBM microbenchmark, `single-h100-hbm-2mib`
+
+#### Before Artifacts
+
+- restored microbenchmark anchor:
+  `.pose/benchmarks/native-hbm-microbench/20260323T131307Z-restored.json`
+- restored end-to-end HBM anchor:
+  `.pose/benchmarks/single-h100-hbm-2mib/20260323T131307Z`
+
+#### After Artifacts
+
+- rejected shared-memory microbenchmark:
+  `.pose/benchmarks/native-hbm-microbench/20260323T131051Z-round3.json`
+- rejected shared-memory HBM artifact:
+  `.pose/benchmarks/single-h100-hbm-2mib/20260323T131051Z`
+
+#### Metric Delta
+
+Compared against the restored current-window anchor:
+
+| metric | before | after | delta |
+| --- | ---: | ---: | ---: |
+| micro `gpu_in_place` ms | 21,629.65 | 22,766.36 | +1,136.71 (+5.26%) |
+| micro `total_kernel_launches` | 655,016 | 279,306 | -375,710 (-57.36%) |
+| label_generation ms | 21,944 | 23,246 | +1,302 (+5.93%) |
+| total ms | 26,974 | 28,187 | +1,213 (+4.50%) |
+| scratch_peak_bytes | 7,340,252 | 7,340,252 | 0 (+0.00%) |
+
+#### Correctness Gates
+
+- tests:
+  the focused native benchmark, parity, and grpc runtime slices stayed green
+  before the revert
+- hardware checks:
+  the real H100 run still returned `SUCCESS` with `declared_stage_copy_bytes=0`
+
+#### Decision
+
+- rejected because:
+  keeping the small-width merged-center workspace in shared memory still did
+  not beat the restored current-window baseline; it remained slower on both the
+  direct microbenchmark and end-to-end `label_generation`
+- conclusion:
+  the direct CUDA HBM gap is not going to close through isolated small-width
+  merge fusion alone; the next credible direction needs a different execution
+  shape, most likely one that reduces host-driven scheduling without turning
+  each tiny subproblem into a slower single-block kernel
+
+## Entry 025: Arithmetic Host Merged-Index Schedule
+
+- date:
+  2026-03-23
+- git head:
+  `7d398b5df889bff3eb2413f4ca48827574df1049`
+- status:
+  accepted
+- hypothesis:
+  the host-side merged-center and ingress lookup tables can be replaced with an
+  exact arithmetic recurrence, eliminating almost all native host scratch while
+  preserving the paper-equivalent schedule and possibly reducing verifier-side
+  prep time.
+
+#### Change Scope
+
+- files:
+  `native/pose_native_label_engine/src/lib.rs`,
+  `tests/parity/test_native_labeling.py`,
+  `scripts/profile_scratch_breakdown.py`
+- profiles benchmarked:
+  `single-host-2mib`, supporting rerun of `single-h100-hbm-2mib`
+
+#### Commands
+
+```bash
+scripts/build_native_label_engine.sh
+
+(cd native/pose_native_label_engine && cargo test -q)
+
+PYTHONPATH=src .venv/bin/python -m pytest -q \
+  tests/parity/test_native_labeling.py \
+  tests/parity/test_accelerated_labeling.py \
+  tests/unit/test_pose_hashing.py \
+  tests/unit/test_pose_graphs.py \
+  tests/unit/test_grpc_pose_db_runtime.py \
+  tests/unit/test_verifier_service.py \
+  tests/unit/test_rechallenge.py \
+  tests/integration/test_cli_smoke.py \
+  tests/unit/test_calibration.py \
+  tests/unit/test_paper_conformance.py \
+  tests/adversarial/test_memory_accounting.py \
+  tests/adversarial/test_host_fast_phase_attacks.py
+
+PYTHONPATH=src .venv/bin/python - <<'PY'
+import json
+import tempfile
+from pathlib import Path
+import yaml
+from pose.benchmarks.harness import run_benchmark
+from pose.protocol.codec import load_json_file
+
+plan = load_json_file(Path('.pose/benchmarks/single-host-2mib/20260323T100342Z/plan.json'))
+profile = plan['profile']
+with tempfile.TemporaryDirectory(prefix='pose-host-2mib-arithmetic-') as temp_dir:
+    profile_path = Path(temp_dir) / 'single-host-2mib.yaml'
+    profile_path.write_text(yaml.safe_dump(profile, sort_keys=False), encoding='utf-8')
+    payload = run_benchmark(str(profile_path))
+    summary = load_json_file(Path(payload['archive']['summary_path']))
+    print(json.dumps({'run_directory': payload['archive']['run_directory'], 'summary': summary}, sort_keys=True))
+PY
+
+PYTHONPATH=src .venv/bin/python scripts/profile_scratch_breakdown.py \
+  --mode host-in-place-arithmetic \
+  --result-artifact .pose/benchmarks/single-host-2mib/20260323T133119Z/run-001.result.json
+
+PYTHONPATH=src .venv/bin/python - <<'PY'
+import json
+import tempfile
+from pathlib import Path
+import yaml
+from pose.benchmarks.harness import run_benchmark
+from pose.protocol.codec import load_json_file
+
+plan = load_json_file(Path('.pose/benchmarks/single-h100-hbm-2mib/20260323T112146Z/plan.json'))
+profile = plan['profile']
+with tempfile.TemporaryDirectory(prefix='pose-h100-hbm-2mib-host-arithmetic-') as temp_dir:
+    profile_path = Path(temp_dir) / 'single-h100-hbm-2mib.yaml'
+    profile_path.write_text(yaml.safe_dump(profile, sort_keys=False), encoding='utf-8')
+    payload = run_benchmark(str(profile_path))
+    summary = load_json_file(Path(payload['archive']['summary_path']))
+    print(json.dumps({'run_directory': payload['archive']['run_directory'], 'summary': summary}, sort_keys=True))
+PY
+```
+
+#### Before Artifacts
+
+- host table-backed anchor:
+  `.pose/benchmarks/single-host-2mib/20260323T100342Z`
+- current HBM anchor:
+  `.pose/benchmarks/single-h100-hbm-2mib/20260323T112146Z`
+
+#### After Artifacts
+
+- host arithmetic artifact:
+  `.pose/benchmarks/single-host-2mib/20260323T133119Z`
+- supporting HBM rerun with host arithmetic verifier path:
+  `.pose/benchmarks/single-h100-hbm-2mib/20260323T133150Z`
+
+#### Metric Delta
+
+Host path, compared against the table-backed anchor:
+
+| metric | before | after | delta |
+| --- | ---: | ---: | ---: |
+| total ms | 7,951 | 7,571 | -380 (-4.78%) |
+| label_generation ms | 3,699 | 3,496 | -203 (-5.49%) |
+| expected_response_prep ms | 3,769 | 3,538 | -231 (-6.13%) |
+| graph_construction ms | 41 | 41 | 0 (+0.00%) |
+| fast_phase ms | 206 | 205 | -1 (-0.49%) |
+| verifier_cpu ms | 4,019 | 3,801 | -218 (-5.42%) |
+| scratch_peak_bytes | 7,865,015 | 687 | -7,864,328 (-99.99%) |
+
+The new host scratch breakdown is exact:
+
+- `label_oracle_payloads = 623` bytes
+- `temp_label_buffers = 64` bytes
+- `merged-plan scheduler metadata = 0` bytes
+
+Supporting HBM rerun:
+
+- `scratch_peak_bytes` stayed `7,340,252`
+- `declared_stage_copy_bytes` stayed `0`
+- `expected_response_prep` improved from `3,684` ms to `3,560` ms
+- `verifier_cpu_time_ms` improved from `3,969` ms to `3,792` ms
+
+#### Correctness Gates
+
+- tests:
+  `cargo test -q` in `native/pose_native_label_engine` passed, including a
+  dimension-by-dimension arithmetic-vs-table index equivalence test through
+  `d=10`
+- parity checks:
+  the focused Python parity, grpc runtime, soundness, and adversarial slices
+  passed (`107 passed`), and the native host parity test now asserts
+  `scratch_peak_bytes < 1024`
+- hardware checks:
+  both the host and supporting HBM reruns returned `SUCCESS` with
+  `declared_stage_copy_bytes=0`
+
+#### Decision
+
+- accepted because:
+  the arithmetic recurrence exactly preserved the merged schedule while
+  removing the host-side `MergedPlan` cache entirely; host scratch fell from
+  `7,865,015` bytes to `687` bytes and host timings improved instead of
+  regressing
+- conclusion:
+  the large host scratch figure was almost entirely precomputed scheduler
+  metadata, not label storage or hash workspace
+- follow-up:
+  the CUDA HBM path still carries its own host+device merged-plan caches, so
+  the next step is to port the same arithmetic schedule into
+  `native/pose_native_label_engine/src/hbm_inplace.cu`
+
+## Entry 026: Arithmetic CUDA HBM Merged-Index Schedule
+
+- date:
+  2026-03-23
+- git head:
+  `7d398b5df889bff3eb2413f4ca48827574df1049`
+- status:
+  accepted
+- hypothesis:
+  the CUDA HBM merged-center path can use the same arithmetic ingress/center
+  index recurrence as the host path, eliminating both the host and device
+  merged-plan caches without changing label order.
+
+#### Change Scope
+
+- files:
+  `native/pose_native_label_engine/src/hbm_inplace.cu`,
+  `tests/parity/test_native_labeling.py`,
+  `scripts/profile_scratch_breakdown.py`
+- profiles benchmarked:
+  direct native HBM microbenchmark, `single-h100-hbm-2mib`
+
+#### Commands
+
+```bash
+scripts/build_native_label_engine.sh
+
+(cd native/pose_native_label_engine && cargo test -q)
+
+PYTHONPATH=src .venv/bin/python -m pytest -q \
+  tests/parity/test_native_labeling.py \
+  tests/unit/test_native_hbm_microbench.py
+
+PYTHONPATH=src .venv/bin/python -m pose.benchmarks.native_hbm_microbench \
+  --label-count-m 65536 \
+  --graph-parameter-n 15 \
+  --hash-backend blake3-xof \
+  --label-width-bits 256 \
+  --device 0 \
+  --repetitions 1 \
+  --output-json .pose/benchmarks/native-hbm-microbench/20260323T135012Z-arithmetic.json
+
+PYTHONPATH=src .venv/bin/python - <<'PY'
+import json
+import tempfile
+from pathlib import Path
+import yaml
+from pose.benchmarks.harness import run_benchmark
+from pose.protocol.codec import load_json_file
+
+plan = load_json_file(Path('.pose/benchmarks/single-h100-hbm-2mib/20260323T112146Z/plan.json'))
+profile = plan['profile']
+with tempfile.TemporaryDirectory(prefix='pose-h100-hbm-2mib-arithmetic-cuda-rerun-') as temp_dir:
+    profile_path = Path(temp_dir) / 'single-h100-hbm-2mib.yaml'
+    profile_path.write_text(yaml.safe_dump(profile, sort_keys=False), encoding='utf-8')
+    payload = run_benchmark(str(profile_path))
+    summary = load_json_file(Path(payload['archive']['summary_path']))
+    print(json.dumps({'run_directory': payload['archive']['run_directory'], 'summary': summary}, sort_keys=True))
+PY
+
+PYTHONPATH=src .venv/bin/python scripts/profile_scratch_breakdown.py \
+  --mode cuda-hbm-in-place-arithmetic \
+  --result-artifact .pose/benchmarks/single-h100-hbm-2mib/20260323T135136Z/run-001.result.json
+
+PYTHONPATH=src .venv/bin/python -m pytest -q \
+  --ignore tests/parity/test_reference_only_mode.py
+```
+
+#### Before Artifacts
+
+- restored microbenchmark anchor:
+  `.pose/benchmarks/native-hbm-microbench/20260323T131307Z-restored.json`
+- current end-to-end HBM anchor:
+  `.pose/benchmarks/single-h100-hbm-2mib/20260323T112146Z`
+
+#### After Artifacts
+
+- arithmetic HBM microbenchmark:
+  `.pose/benchmarks/native-hbm-microbench/20260323T135012Z-arithmetic.json`
+- accepted arithmetic HBM artifact:
+  `.pose/benchmarks/single-h100-hbm-2mib/20260323T135136Z`
+
+#### Metric Delta
+
+Direct native HBM microbenchmark, compared against the restored anchor:
+
+| metric | before | after | delta |
+| --- | ---: | ---: | ---: |
+| micro `gpu_in_place` ms | 21,629.65 | 11,925.17 | -9,704.47 (-44.87%) |
+| micro `scratch_peak_bytes` | 7,340,252 | 204 | -7,340,048 (-99.9972%) |
+| micro `host_merged_plan_builds` | 15 | 0 | -15 (-100.00%) |
+| micro `device_merged_plan_builds` | 15 | 0 | -15 (-100.00%) |
+| micro `total_kernel_launches` | 655,016 | 655,016 | 0 (+0.00%) |
+
+End-to-end `single-h100-hbm-2mib`, compared against the current anchor:
+
+| metric | before | after | delta |
+| --- | ---: | ---: | ---: |
+| total ms | 14,973 | 14,130 | -843 (-5.63%) |
+| label_generation ms | 10,553 | 9,879 | -674 (-6.39%) |
+| expected_response_prep ms | 3,684 | 3,563 | -121 (-3.28%) |
+| graph_construction ms | 42 | 41 | -1 (-2.38%) |
+| fast_phase ms | 205 | 205 | 0 (+0.00%) |
+| verifier_cpu ms | 3,969 | 3,847 | -122 (-3.07%) |
+| scratch_peak_bytes | 7,340,252 | 204 | -7,340,048 (-99.9972%) |
+
+The new HBM scratch breakdown is exact:
+
+- `pose_oracle_config = 204` bytes
+- `host_merged_plan_cache = 0` bytes
+- `device_merged_plan_cache = 0` bytes
+
+#### Correctness Gates
+
+- tests:
+  `cargo test -q` passed for the native crate
+- parity checks:
+  the Python native/HBM parity slice passed (`9 passed`), including a new GPU
+  profile check that asserts `scratch_peak_bytes < 1024` and both merged-plan
+  build counters remain zero
+- repository checks:
+  `PYTHONPATH=src .venv/bin/python -m pytest -q --ignore tests/parity/test_reference_only_mode.py`
+  passed (`164 passed`)
+- hardware checks:
+  both the direct microbenchmark and the accepted `single-h100-hbm-2mib`
+  rerun returned `SUCCESS` with `declared_stage_copy_bytes=0`
+
+#### Decision
+
+- accepted because:
+  the arithmetic recurrence removed the remaining CUDA HBM plan-cache scratch
+  entirely, preserved the label schedule, and improved both the direct GPU fill
+  benchmark and the stable end-to-end HBM benchmark
+- conclusion:
+  the HBM scratch figure was the mirrored merged-plan metadata, not an inherent
+  requirement of the in-place device materialization path
+- follow-up:
+  if cooperative fused kernels are revisited later, they should keep using the
+  arithmetic recurrence rather than reintroducing device index tables
+
 ## Template For Future Entries
 
 Copy this section and increment the entry number.

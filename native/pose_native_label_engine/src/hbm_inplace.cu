@@ -5,8 +5,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <memory>
-#include <queue>
 #include <string>
 #include <vector>
 
@@ -69,109 +67,35 @@ struct GraphCounts {
   }
 };
 
-struct MergedPlan {
-  std::size_t width;
-  std::vector<std::uint32_t> ingress_indices;
-  std::vector<std::uint32_t> center_indices;
-
-  static MergedPlan build(std::size_t dimension) {
-    const std::size_t width = static_cast<std::size_t>(1) << dimension;
-    const std::size_t center_node_count = (dimension + 1) * width;
-    const std::size_t ingress_node_base = center_node_count;
-    const std::size_t total_local_nodes = center_node_count * 2;
-    std::vector<std::uint8_t> remaining_indegree(total_local_nodes, 0);
-    std::vector<std::uint32_t> ingress_indices((dimension + 1) * width, 0);
-    std::vector<std::uint32_t> center_indices((dimension + 1) * width, 0);
-
-    for (std::size_t offset = 0; offset < width; ++offset) {
-      remaining_indegree[offset] = 1;
-    }
-    for (std::size_t layer = 1; layer <= dimension; ++layer) {
-      const std::size_t layer_base = layer * width;
-      const std::size_t ingress_layer_base = ingress_node_base + layer_base;
-      for (std::size_t offset = 0; offset < width; ++offset) {
-        remaining_indegree[layer_base + offset] = 2;
-        remaining_indegree[ingress_layer_base + offset] = 2;
-      }
-    }
-
-    auto release_local_successor = [&](std::size_t local_successor,
-                                       std::priority_queue<std::size_t, std::vector<std::size_t>,
-                                                           std::greater<std::size_t>> &ready) {
-      const std::uint8_t updated = static_cast<std::uint8_t>(remaining_indegree[local_successor] - 1);
-      remaining_indegree[local_successor] = updated;
-      if (updated == 0) {
-        ready.push(local_successor);
-      }
-    };
-
-    std::priority_queue<std::size_t, std::vector<std::size_t>, std::greater<std::size_t>> ready;
-    for (std::size_t local_node = ingress_node_base; local_node < ingress_node_base + width; ++local_node) {
-      ready.push(local_node);
-    }
-
-    std::uint32_t next_index = 0;
-    while (!ready.empty()) {
-      const std::size_t local_node = ready.top();
-      ready.pop();
-      if (local_node < ingress_node_base) {
-        const std::size_t layer = local_node / width;
-        const std::size_t offset = local_node % width;
-        center_indices[(layer * width) + offset] = next_index++;
-        if (layer < dimension) {
-          const std::size_t successor_layer_base = (layer + 1) * width;
-          const std::size_t bit = static_cast<std::size_t>(1) << (dimension - 1 - layer);
-          release_local_successor(successor_layer_base + offset, ready);
-          release_local_successor(successor_layer_base + (offset ^ bit), ready);
-        }
-      } else {
-        const std::size_t ingress_local = local_node - ingress_node_base;
-        const std::size_t layer = ingress_local / width;
-        const std::size_t offset = ingress_local % width;
-        ingress_indices[(layer * width) + offset] = next_index++;
-        if (layer < dimension) {
-          const std::size_t successor_layer_base = ingress_node_base + ((layer + 1) * width);
-          const std::size_t bit = static_cast<std::size_t>(1) << (dimension - 1 - layer);
-          release_local_successor(successor_layer_base + offset, ready);
-          release_local_successor(successor_layer_base + (offset ^ bit), ready);
-        } else {
-          release_local_successor(offset, ready);
-        }
-      }
-    }
-
-    return MergedPlan{
-        width,
-        std::move(ingress_indices),
-        std::move(center_indices),
-    };
-  }
-
-  std::size_t accounted_bytes() const {
-    return (ingress_indices.size() + center_indices.size()) * sizeof(std::uint32_t);
-  }
-};
-
-struct DeviceMergedPlan {
-  std::size_t index_count;
-  std::uint32_t *ingress_indices;
-  std::uint32_t *center_indices;
-
-  explicit DeviceMergedPlan(std::size_t index_count_value)
-      : index_count(index_count_value), ingress_indices(nullptr), center_indices(nullptr) {}
-
-  ~DeviceMergedPlan() {
-    if (ingress_indices != nullptr) {
-      cudaFree(ingress_indices);
-    }
-    if (center_indices != nullptr) {
-      cudaFree(center_indices);
-    }
-  }
-
-  std::size_t accounted_bytes() const {
-    return index_count * sizeof(std::uint32_t) * 2;
-  }
+struct HbmProfileCounters {
+  std::uint64_t total_kernel_launches;
+  std::uint64_t total_blocks_launched;
+  std::uint64_t total_threads_launched;
+  std::uint64_t launch_source_labels;
+  std::uint64_t launch_internal1_copy;
+  std::uint64_t launch_internal1_inplace_contiguous;
+  std::uint64_t launch_internal1_inplace_indexed;
+  std::uint64_t launch_internal2_inplace_contiguous;
+  std::uint64_t launch_internal2_inplace_indexed;
+  std::uint64_t launch_combine_buffers;
+  std::uint64_t launch_connector_inplace_cooperative;
+  std::uint64_t launch_connector_copy_cooperative;
+  std::uint64_t launch_merged_center_ingress_cooperative;
+  std::uint64_t cooperative_launch_attempts;
+  std::uint64_t cooperative_launch_successes;
+  std::uint64_t cooperative_launch_fallbacks;
+  std::uint64_t device_to_device_copies;
+  std::uint64_t device_to_device_copy_bytes;
+  std::uint64_t device_synchronizes;
+  std::uint64_t host_merged_plan_builds;
+  std::uint64_t device_merged_plan_builds;
+  std::uint64_t standalone_base_calls;
+  std::uint64_t standalone_right_prefix_calls;
+  std::uint64_t connected_full_calls;
+  std::uint64_t connected_prefix_calls;
+  std::uint64_t connector_from_inputs_calls;
+  std::uint64_t connector_in_place_calls;
+  std::uint64_t merged_center_ingress_calls;
 };
 
 struct CudaStatus {
@@ -183,6 +107,49 @@ inline CudaStatus ok_status() { return CudaStatus{0, nullptr}; }
 
 inline CudaStatus make_error(const char *message, int code = 1) {
   return CudaStatus{code, message};
+}
+
+__device__ __forceinline__ std::uint32_t merged_final_ingress_displacement(
+    std::uint32_t dimension,
+    std::uint32_t offset) {
+  std::uint32_t displacement = 0;
+  std::uint32_t scale = 1;
+  while (dimension > 0) {
+    const std::uint32_t half_width = static_cast<std::uint32_t>(1u << (dimension - 1));
+    if (offset < half_width) {
+      return displacement + (scale * (offset << 1));
+    }
+    displacement += scale * static_cast<std::uint32_t>(1u << dimension);
+    scale <<= 1;
+    offset -= half_width;
+    dimension -= 1;
+  }
+  return displacement;
+}
+
+__device__ __forceinline__ std::uint32_t merged_ingress_index(
+    std::uint32_t dimension,
+    std::uint32_t layer,
+    std::uint32_t offset) {
+  const std::uint32_t width = static_cast<std::uint32_t>(1u << dimension);
+  if (layer < dimension) {
+    return (layer * width) + offset;
+  }
+  return (dimension * width) + merged_final_ingress_displacement(dimension, offset);
+}
+
+__device__ __forceinline__ std::uint32_t merged_center_index(
+    std::uint32_t dimension,
+    std::uint32_t layer,
+    std::uint32_t offset) {
+  const std::uint32_t width = static_cast<std::uint32_t>(1u << dimension);
+  const std::uint32_t remaining_dimension = dimension - layer;
+  const std::uint32_t block_width = static_cast<std::uint32_t>(1u << remaining_dimension);
+  return ((dimension + layer) * width) +
+         static_cast<std::uint32_t>(1u << layer) +
+         (offset / block_width) +
+         (static_cast<std::uint32_t>(1u << layer) *
+          merged_final_ingress_displacement(remaining_dimension, offset % block_width));
 }
 
 inline bool cuda_ok(cudaError_t error, const char *action, char *error_buf, std::size_t error_buf_len) {
@@ -442,29 +409,6 @@ __global__ void kernel_internal1_copy(const std::uint8_t *inputs, std::uint8_t *
   }
 }
 
-__global__ void kernel_internal1_inplace_indexed(std::uint8_t *buffer, std::uint32_t count,
-                                                 const std::uint32_t *relative_indices, std::uint64_t start_index,
-                                                 PoseOracleConfig config) {
-  const std::uint32_t index = static_cast<std::uint32_t>(blockIdx.x * blockDim.x + threadIdx.x);
-  if (index >= count) {
-    return;
-  }
-  std::uint8_t predecessor[kMaxLabelBytes];
-  const std::uint8_t *input = buffer + (static_cast<std::size_t>(index) * config.output_bytes);
-  for (std::uint32_t i = 0; i < config.output_bytes; ++i) {
-    predecessor[i] = input[i];
-  }
-  std::uint8_t payload[kMaxPayloadBytes];
-  std::uint8_t digest[32];
-  const std::size_t payload_len =
-      build_internal_payload(payload, config, start_index + relative_indices[index], predecessor, nullptr, 1);
-  blake3_hash_small(payload, payload_len, digest);
-  std::uint8_t *out = buffer + (static_cast<std::size_t>(index) * config.output_bytes);
-  for (std::uint32_t i = 0; i < config.output_bytes; ++i) {
-    out[i] = digest[i];
-  }
-}
-
 __global__ void kernel_internal1_inplace_contiguous(std::uint8_t *buffer, std::uint32_t count,
                                                     std::uint64_t start_index, PoseOracleConfig config) {
   const std::uint32_t index = static_cast<std::uint32_t>(blockIdx.x * blockDim.x + threadIdx.x);
@@ -519,9 +463,10 @@ __global__ void kernel_internal2_inplace_contiguous(std::uint8_t *buffer, std::u
   }
 }
 
-__global__ void kernel_internal2_inplace_indexed(std::uint8_t *buffer, std::uint32_t width, std::uint32_t bit,
-                                                 const std::uint32_t *relative_indices, std::uint64_t start_index,
-                                                 PoseOracleConfig config) {
+__global__ void kernel_internal2_inplace_merged_phase(std::uint8_t *buffer, std::uint32_t width,
+                                                      std::uint32_t bit, std::uint32_t dimension,
+                                                      std::uint32_t layer, std::uint32_t center_phase,
+                                                      std::uint64_t start_index, PoseOracleConfig config) {
   const std::uint32_t left = static_cast<std::uint32_t>(blockIdx.x * blockDim.x + threadIdx.x);
   if (left >= width || (left & bit) != 0) {
     return;
@@ -538,11 +483,17 @@ __global__ void kernel_internal2_inplace_indexed(std::uint8_t *buffer, std::uint
   std::uint8_t payload[kMaxPayloadBytes];
   std::uint8_t digest_left[32];
   std::uint8_t digest_right[32];
+  const std::uint32_t left_relative_index = center_phase != 0
+      ? merged_center_index(dimension, layer, left)
+      : merged_ingress_index(dimension, layer, left);
+  const std::uint32_t right_relative_index = center_phase != 0
+      ? merged_center_index(dimension, layer, right)
+      : merged_ingress_index(dimension, layer, right);
   const std::size_t payload_len_left =
-      build_internal_payload(payload, config, start_index + relative_indices[left], pred0, pred1, 2);
+      build_internal_payload(payload, config, start_index + left_relative_index, pred0, pred1, 2);
   blake3_hash_small(payload, payload_len_left, digest_left);
   const std::size_t payload_len_right =
-      build_internal_payload(payload, config, start_index + relative_indices[right], pred0, pred1, 2);
+      build_internal_payload(payload, config, start_index + right_relative_index, pred0, pred1, 2);
   blake3_hash_small(payload, payload_len_right, digest_right);
   std::uint8_t *left_out = buffer + (static_cast<std::size_t>(left) * config.output_bytes);
   std::uint8_t *right_out = buffer + (static_cast<std::size_t>(right) * config.output_bytes);
@@ -552,9 +503,12 @@ __global__ void kernel_internal2_inplace_indexed(std::uint8_t *buffer, std::uint
   }
 }
 
-__global__ void kernel_internal2_combine_buffers(std::uint8_t *ingress_buffer, const std::uint8_t *primary_inputs,
-                                                 std::uint32_t width, const std::uint32_t *relative_indices,
-                                                 std::uint64_t start_index, PoseOracleConfig config) {
+__global__ void kernel_internal2_combine_buffers_merged_center(std::uint8_t *ingress_buffer,
+                                                               const std::uint8_t *primary_inputs,
+                                                               std::uint32_t width,
+                                                               std::uint32_t dimension,
+                                                               std::uint64_t start_index,
+                                                               PoseOracleConfig config) {
   const std::uint32_t index = static_cast<std::uint32_t>(blockIdx.x * blockDim.x + threadIdx.x);
   if (index >= width) {
     return;
@@ -570,7 +524,7 @@ __global__ void kernel_internal2_combine_buffers(std::uint8_t *ingress_buffer, c
   std::uint8_t payload[kMaxPayloadBytes];
   std::uint8_t digest[32];
   const std::size_t payload_len =
-      build_internal_payload(payload, config, start_index + relative_indices[index], pred0, pred1, 2);
+      build_internal_payload(payload, config, start_index + merged_center_index(dimension, 0, index), pred0, pred1, 2);
   blake3_hash_small(payload, payload_len, digest);
   std::uint8_t *out = ingress_buffer + (static_cast<std::size_t>(index) * config.output_bytes);
   for (std::uint32_t i = 0; i < config.output_bytes; ++i) {
@@ -687,8 +641,6 @@ __global__ void kernel_connector_copy_cooperative(const std::uint8_t *inputs, st
 __global__ void kernel_merged_center_ingress_cooperative(const std::uint8_t *primary_inputs,
                                                          std::uint8_t *ingress_buffer, std::uint32_t width,
                                                          std::uint32_t dimension, std::uint64_t start_index,
-                                                         const std::uint32_t *ingress_indices,
-                                                         const std::uint32_t *center_indices,
                                                          PoseOracleConfig config) {
   cg::grid_group grid = cg::this_grid();
   const std::uint32_t index = static_cast<std::uint32_t>(blockIdx.x * blockDim.x + threadIdx.x);
@@ -700,8 +652,8 @@ __global__ void kernel_merged_center_ingress_cooperative(const std::uint8_t *pri
     }
     std::uint8_t payload[kMaxPayloadBytes];
     std::uint8_t digest[32];
-    const std::size_t payload_len = build_internal_payload(
-        payload, config, start_index + ingress_indices[index], predecessor, nullptr, 1);
+    const std::size_t payload_len =
+        build_internal_payload(payload, config, start_index + index, predecessor, nullptr, 1);
     blake3_hash_small(payload, payload_len, digest);
     std::uint8_t *out = ingress_buffer + (static_cast<std::size_t>(index) * config.output_bytes);
     for (std::uint32_t i = 0; i < config.output_bytes; ++i) {
@@ -711,7 +663,6 @@ __global__ void kernel_merged_center_ingress_cooperative(const std::uint8_t *pri
   grid.sync();
   for (std::uint32_t layer = 1; layer <= dimension; ++layer) {
     const std::uint32_t bit = static_cast<std::uint32_t>(1u << (dimension - layer));
-    const std::uint32_t *layer_indices = ingress_indices + (static_cast<std::size_t>(layer) * width);
     if (index < width && (index & bit) == 0) {
       const std::uint32_t right = index ^ bit;
       std::uint8_t pred0[kMaxLabelBytes];
@@ -725,11 +676,13 @@ __global__ void kernel_merged_center_ingress_cooperative(const std::uint8_t *pri
       std::uint8_t payload[kMaxPayloadBytes];
       std::uint8_t digest_left[32];
       std::uint8_t digest_right[32];
+      const std::uint32_t left_relative_index = merged_ingress_index(dimension, layer, index);
+      const std::uint32_t right_relative_index = merged_ingress_index(dimension, layer, right);
       const std::size_t payload_len_left =
-          build_internal_payload(payload, config, start_index + layer_indices[index], pred0, pred1, 2);
+          build_internal_payload(payload, config, start_index + left_relative_index, pred0, pred1, 2);
       blake3_hash_small(payload, payload_len_left, digest_left);
       const std::size_t payload_len_right =
-          build_internal_payload(payload, config, start_index + layer_indices[right], pred0, pred1, 2);
+          build_internal_payload(payload, config, start_index + right_relative_index, pred0, pred1, 2);
       blake3_hash_small(payload, payload_len_right, digest_right);
       std::uint8_t *left_out = ingress_buffer + (static_cast<std::size_t>(index) * config.output_bytes);
       std::uint8_t *right_out = ingress_buffer + (static_cast<std::size_t>(right) * config.output_bytes);
@@ -752,7 +705,7 @@ __global__ void kernel_merged_center_ingress_cooperative(const std::uint8_t *pri
     std::uint8_t payload[kMaxPayloadBytes];
     std::uint8_t digest[32];
     const std::size_t payload_len =
-        build_internal_payload(payload, config, start_index + center_indices[index], pred0, pred1, 2);
+        build_internal_payload(payload, config, start_index + merged_center_index(dimension, 0, index), pred0, pred1, 2);
     blake3_hash_small(payload, payload_len, digest);
     std::uint8_t *out = ingress_buffer + (static_cast<std::size_t>(index) * config.output_bytes);
     for (std::uint32_t i = 0; i < config.output_bytes; ++i) {
@@ -762,7 +715,6 @@ __global__ void kernel_merged_center_ingress_cooperative(const std::uint8_t *pri
   grid.sync();
   for (std::uint32_t layer = 1; layer <= dimension; ++layer) {
     const std::uint32_t bit = static_cast<std::uint32_t>(1u << (dimension - layer));
-    const std::uint32_t *layer_indices = center_indices + (static_cast<std::size_t>(layer) * width);
     if (index < width && (index & bit) == 0) {
       const std::uint32_t right = index ^ bit;
       std::uint8_t pred0[kMaxLabelBytes];
@@ -776,11 +728,13 @@ __global__ void kernel_merged_center_ingress_cooperative(const std::uint8_t *pri
       std::uint8_t payload[kMaxPayloadBytes];
       std::uint8_t digest_left[32];
       std::uint8_t digest_right[32];
+      const std::uint32_t left_relative_index = merged_center_index(dimension, layer, index);
+      const std::uint32_t right_relative_index = merged_center_index(dimension, layer, right);
       const std::size_t payload_len_left =
-          build_internal_payload(payload, config, start_index + layer_indices[index], pred0, pred1, 2);
+          build_internal_payload(payload, config, start_index + left_relative_index, pred0, pred1, 2);
       blake3_hash_small(payload, payload_len_left, digest_left);
       const std::size_t payload_len_right =
-          build_internal_payload(payload, config, start_index + layer_indices[right], pred0, pred1, 2);
+          build_internal_payload(payload, config, start_index + right_relative_index, pred0, pred1, 2);
       blake3_hash_small(payload, payload_len_right, digest_right);
       std::uint8_t *left_out = ingress_buffer + (static_cast<std::size_t>(index) * config.output_bytes);
       std::uint8_t *right_out = ingress_buffer + (static_cast<std::size_t>(right) * config.output_bytes);
@@ -793,6 +747,7 @@ __global__ void kernel_merged_center_ingress_cooperative(const std::uint8_t *pri
   }
 }
 
+
 class CudaInPlaceLabeler {
  public:
   CudaInPlaceLabeler(std::size_t label_count_m, std::size_t graph_parameter_n, const PoseOracleConfig &config)
@@ -800,11 +755,8 @@ class CudaInPlaceLabeler {
         graph_parameter_n_(graph_parameter_n),
         config_(config),
         counts_(graph_parameter_n + 1),
-        plans_(graph_parameter_n + 1),
-        device_plans_(graph_parameter_n + 1),
-        merged_plan_bytes_(0),
-        device_plan_bytes_(0),
         peak_scratch_bytes_(sizeof(PoseOracleConfig)),
+        profile_{},
         cooperative_launch_supported_(false),
         multiprocessor_count_(0) {
     int supported = 0;
@@ -821,6 +773,7 @@ class CudaInPlaceLabeler {
   }
 
   std::uint64_t scratch_peak_bytes() const { return peak_scratch_bytes_; }
+  const HbmProfileCounters &profiling_counters() const { return profile_; }
 
   cudaError_t fill(std::uint8_t *target, std::size_t target_len) {
     const std::size_t left_width = static_cast<std::size_t>(1) << graph_parameter_n_;
@@ -838,10 +791,13 @@ class CudaInPlaceLabeler {
         return error;
       }
       const std::size_t right_bytes = retained_from_right * config_.output_bytes;
+      profile_.device_to_device_copies += 1;
+      profile_.device_to_device_copy_bytes += static_cast<std::uint64_t>(right_bytes);
       error = cudaMemcpy(right_output, left_workspace, right_bytes, cudaMemcpyDeviceToDevice);
       if (error != cudaSuccess) {
         return error;
       }
+      profile_.device_synchronizes += 1;
       error = cudaDeviceSynchronize();
       if (error != cudaSuccess) {
         return error;
@@ -855,65 +811,17 @@ class CudaInPlaceLabeler {
   std::size_t graph_parameter_n_;
   PoseOracleConfig config_;
   GraphCounts counts_;
-  std::vector<std::unique_ptr<MergedPlan>> plans_;
-  std::vector<std::unique_ptr<DeviceMergedPlan>> device_plans_;
-  std::uint64_t merged_plan_bytes_;
-  std::uint64_t device_plan_bytes_;
   std::uint64_t peak_scratch_bytes_;
+  HbmProfileCounters profile_;
   bool cooperative_launch_supported_;
   int multiprocessor_count_;
 
-  void record_scratch() {
-    peak_scratch_bytes_ =
-        std::max<std::uint64_t>(peak_scratch_bytes_, merged_plan_bytes_ + device_plan_bytes_ + sizeof(PoseOracleConfig));
-  }
-
-  const MergedPlan &plan(std::size_t dimension) {
-    if (!plans_[dimension]) {
-      plans_[dimension] = std::make_unique<MergedPlan>(MergedPlan::build(dimension));
-      merged_plan_bytes_ += plans_[dimension]->accounted_bytes();
-      record_scratch();
-    }
-    return *plans_[dimension];
-  }
-
-  const DeviceMergedPlan &device_plan(std::size_t dimension) {
-    if (!device_plans_[dimension]) {
-      const auto &host_plan = plan(dimension);
-      auto plan_copy = std::make_unique<DeviceMergedPlan>(host_plan.ingress_indices.size());
-      cudaError_t error = cudaMalloc(
-          reinterpret_cast<void **>(&plan_copy->ingress_indices),
-          host_plan.ingress_indices.size() * sizeof(std::uint32_t));
-      if (error != cudaSuccess) {
-        throw error;
-      }
-      error = cudaMalloc(
-          reinterpret_cast<void **>(&plan_copy->center_indices),
-          host_plan.center_indices.size() * sizeof(std::uint32_t));
-      if (error != cudaSuccess) {
-        throw error;
-      }
-      error = cudaMemcpy(
-          plan_copy->ingress_indices,
-          host_plan.ingress_indices.data(),
-          host_plan.ingress_indices.size() * sizeof(std::uint32_t),
-          cudaMemcpyHostToDevice);
-      if (error != cudaSuccess) {
-        throw error;
-      }
-      error = cudaMemcpy(
-          plan_copy->center_indices,
-          host_plan.center_indices.data(),
-          host_plan.center_indices.size() * sizeof(std::uint32_t),
-          cudaMemcpyHostToDevice);
-      if (error != cudaSuccess) {
-        throw error;
-      }
-      device_plan_bytes_ += plan_copy->accounted_bytes();
-      record_scratch();
-      device_plans_[dimension] = std::move(plan_copy);
-    }
-    return *device_plans_[dimension];
+  void record_kernel_launch(std::uint64_t &counter, std::size_t blocks, std::uint32_t threads) {
+    counter += 1;
+    profile_.total_kernel_launches += 1;
+    profile_.total_blocks_launched += static_cast<std::uint64_t>(blocks);
+    profile_.total_threads_launched +=
+        static_cast<std::uint64_t>(blocks) * static_cast<std::uint64_t>(threads);
   }
 
   template <typename KernelT>
@@ -935,6 +843,7 @@ class CudaInPlaceLabeler {
     if (error != cudaSuccess) {
       return error;
     }
+    record_kernel_launch(profile_.launch_source_labels, blocks, kThreadsPerBlock);
     return cudaSuccess;
   }
 
@@ -947,6 +856,7 @@ class CudaInPlaceLabeler {
     if (error != cudaSuccess) {
       return error;
     }
+    record_kernel_launch(profile_.launch_internal1_copy, blocks, kThreadsPerBlock);
     return cudaSuccess;
   }
 
@@ -959,19 +869,7 @@ class CudaInPlaceLabeler {
     if (error != cudaSuccess) {
       return error;
     }
-    return cudaSuccess;
-  }
-
-  cudaError_t launch_internal1_inplace_indexed(std::uint8_t *buffer, std::size_t count,
-                                               const std::uint32_t *device_relative_indices,
-                                               std::uint64_t start_index) {
-    const auto blocks = static_cast<unsigned>((count + kThreadsPerBlock - 1) / kThreadsPerBlock);
-    kernel_internal1_inplace_indexed<<<blocks, kThreadsPerBlock>>>(
-        buffer, static_cast<std::uint32_t>(count), device_relative_indices, start_index, config_);
-    auto error = cudaGetLastError();
-    if (error != cudaSuccess) {
-      return error;
-    }
+    record_kernel_launch(profile_.launch_internal1_inplace_contiguous, blocks, kThreadsPerBlock);
     return cudaSuccess;
   }
 
@@ -984,13 +882,16 @@ class CudaInPlaceLabeler {
     if (error != cudaSuccess) {
       return error;
     }
+    record_kernel_launch(profile_.launch_internal2_inplace_contiguous, blocks, kThreadsPerBlock);
     return cudaSuccess;
   }
 
   cudaError_t launch_connector_inplace_cooperative(std::uint8_t *buffer, std::size_t width,
                                                    std::size_t dimension, std::uint64_t start_index) {
     const auto blocks = static_cast<unsigned>((width + kCooperativeThreadsPerBlock - 1) / kCooperativeThreadsPerBlock);
+    profile_.cooperative_launch_attempts += 1;
     if (!cooperative_launch_fits(kernel_connector_inplace_cooperative, blocks, kCooperativeThreadsPerBlock)) {
+      profile_.cooperative_launch_fallbacks += 1;
       return cudaErrorCooperativeLaunchTooLarge;
     }
     std::uint32_t width32 = static_cast<std::uint32_t>(width);
@@ -1002,15 +903,25 @@ class CudaInPlaceLabeler {
         dim3(kCooperativeThreadsPerBlock),
         args);
     if (error != cudaSuccess) {
+      profile_.cooperative_launch_fallbacks += 1;
       return error;
     }
-    return cudaGetLastError();
+    error = cudaGetLastError();
+    if (error != cudaSuccess) {
+      profile_.cooperative_launch_fallbacks += 1;
+      return error;
+    }
+    profile_.cooperative_launch_successes += 1;
+    record_kernel_launch(profile_.launch_connector_inplace_cooperative, blocks, kCooperativeThreadsPerBlock);
+    return cudaSuccess;
   }
 
   cudaError_t launch_connector_copy_cooperative(const std::uint8_t *inputs, std::uint8_t *outputs, std::size_t width,
                                                 std::size_t dimension, std::uint64_t start_index) {
     const auto blocks = static_cast<unsigned>((width + kCooperativeThreadsPerBlock - 1) / kCooperativeThreadsPerBlock);
+    profile_.cooperative_launch_attempts += 1;
     if (!cooperative_launch_fits(kernel_connector_copy_cooperative, blocks, kCooperativeThreadsPerBlock)) {
+      profile_.cooperative_launch_fallbacks += 1;
       return cudaErrorCooperativeLaunchTooLarge;
     }
     std::uint32_t width32 = static_cast<std::uint32_t>(width);
@@ -1023,33 +934,37 @@ class CudaInPlaceLabeler {
         dim3(kCooperativeThreadsPerBlock),
         args);
     if (error != cudaSuccess) {
+      profile_.cooperative_launch_fallbacks += 1;
       return error;
     }
-    return cudaGetLastError();
+    error = cudaGetLastError();
+    if (error != cudaSuccess) {
+      profile_.cooperative_launch_fallbacks += 1;
+      return error;
+    }
+    profile_.cooperative_launch_successes += 1;
+    record_kernel_launch(profile_.launch_connector_copy_cooperative, blocks, kCooperativeThreadsPerBlock);
+    return cudaSuccess;
   }
 
   cudaError_t launch_merged_center_ingress_cooperative(const std::uint8_t *primary_inputs,
                                                        std::uint8_t *ingress_workspace, std::size_t width,
-                                                       std::size_t dimension, std::uint64_t start_index,
-                                                       const std::uint32_t *device_ingress_indices,
-                                                       const std::uint32_t *device_center_indices) {
+                                                       std::size_t dimension, std::uint64_t start_index) {
     const auto blocks = static_cast<unsigned>((width + kCooperativeThreadsPerBlock - 1) / kCooperativeThreadsPerBlock);
+    profile_.cooperative_launch_attempts += 1;
     if (!cooperative_launch_fits(kernel_merged_center_ingress_cooperative, blocks, kCooperativeThreadsPerBlock)) {
+      profile_.cooperative_launch_fallbacks += 1;
       return cudaErrorCooperativeLaunchTooLarge;
     }
     std::uint32_t width32 = static_cast<std::uint32_t>(width);
     std::uint32_t dimension32 = static_cast<std::uint32_t>(dimension);
     std::uint8_t *mutable_primary_inputs = const_cast<std::uint8_t *>(primary_inputs);
-    std::uint32_t *mutable_ingress_indices = const_cast<std::uint32_t *>(device_ingress_indices);
-    std::uint32_t *mutable_center_indices = const_cast<std::uint32_t *>(device_center_indices);
     void *args[] = {
         &mutable_primary_inputs,
         &ingress_workspace,
         &width32,
         &dimension32,
         &start_index,
-        &mutable_ingress_indices,
-        &mutable_center_indices,
         &config_,
     };
     auto error = cudaLaunchCooperativeKernel(
@@ -1058,34 +973,57 @@ class CudaInPlaceLabeler {
         dim3(kCooperativeThreadsPerBlock),
         args);
     if (error != cudaSuccess) {
+      profile_.cooperative_launch_fallbacks += 1;
       return error;
     }
-    return cudaGetLastError();
-  }
-
-  cudaError_t launch_internal2_indexed(std::uint8_t *buffer, std::size_t width, std::size_t bit,
-                                       const std::uint32_t *device_relative_indices,
-                                       std::uint64_t start_index) {
-    const auto blocks = static_cast<unsigned>((width + kThreadsPerBlock - 1) / kThreadsPerBlock);
-    kernel_internal2_inplace_indexed<<<blocks, kThreadsPerBlock>>>(
-        buffer, static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(bit), device_relative_indices, start_index, config_);
-    auto error = cudaGetLastError();
+    error = cudaGetLastError();
     if (error != cudaSuccess) {
+      profile_.cooperative_launch_fallbacks += 1;
       return error;
     }
+    profile_.cooperative_launch_successes += 1;
+    record_kernel_launch(profile_.launch_merged_center_ingress_cooperative, blocks, kCooperativeThreadsPerBlock);
     return cudaSuccess;
   }
 
-  cudaError_t launch_combine_buffers(std::uint8_t *ingress_buffer, const std::uint8_t *primary_inputs,
-                                     std::size_t width, const std::uint32_t *device_relative_indices,
-                                     std::uint64_t start_index) {
+  cudaError_t launch_internal2_merged_phase(std::uint8_t *buffer, std::size_t width, std::size_t bit,
+                                            std::size_t dimension, std::size_t layer,
+                                            bool center_phase, std::uint64_t start_index) {
     const auto blocks = static_cast<unsigned>((width + kThreadsPerBlock - 1) / kThreadsPerBlock);
-    kernel_internal2_combine_buffers<<<blocks, kThreadsPerBlock>>>(
-        ingress_buffer, primary_inputs, static_cast<std::uint32_t>(width), device_relative_indices, start_index, config_);
+    kernel_internal2_inplace_merged_phase<<<blocks, kThreadsPerBlock>>>(
+        buffer,
+        static_cast<std::uint32_t>(width),
+        static_cast<std::uint32_t>(bit),
+        static_cast<std::uint32_t>(dimension),
+        static_cast<std::uint32_t>(layer),
+        center_phase ? 1u : 0u,
+        start_index,
+        config_);
     auto error = cudaGetLastError();
     if (error != cudaSuccess) {
       return error;
     }
+    record_kernel_launch(profile_.launch_internal2_inplace_indexed, blocks, kThreadsPerBlock);
+    return cudaSuccess;
+  }
+
+  cudaError_t launch_combine_buffers_merged_center(std::uint8_t *ingress_buffer,
+                                                   const std::uint8_t *primary_inputs,
+                                                   std::size_t width, std::size_t dimension,
+                                                   std::uint64_t start_index) {
+    const auto blocks = static_cast<unsigned>((width + kThreadsPerBlock - 1) / kThreadsPerBlock);
+    kernel_internal2_combine_buffers_merged_center<<<blocks, kThreadsPerBlock>>>(
+        ingress_buffer,
+        primary_inputs,
+        static_cast<std::uint32_t>(width),
+        static_cast<std::uint32_t>(dimension),
+        start_index,
+        config_);
+    auto error = cudaGetLastError();
+    if (error != cudaSuccess) {
+      return error;
+    }
+    record_kernel_launch(profile_.launch_combine_buffers, blocks, kThreadsPerBlock);
     return cudaSuccess;
   }
 
@@ -1104,6 +1042,7 @@ class CudaInPlaceLabeler {
 
   cudaError_t connector_from_inputs_into_buffer(std::size_t dimension, const std::uint8_t *inputs,
                                                 std::uint8_t *outputs, std::uint64_t start_index) {
+    profile_.connector_from_inputs_calls += 1;
     const std::size_t width = static_cast<std::size_t>(1) << dimension;
     auto error = launch_connector_copy_cooperative(inputs, outputs, width, dimension, start_index);
     if (error == cudaSuccess) {
@@ -1117,6 +1056,7 @@ class CudaInPlaceLabeler {
   }
 
   cudaError_t connector_in_place(std::size_t dimension, std::uint8_t *buffer, std::uint64_t start_index) {
+    profile_.connector_in_place_calls += 1;
     const std::size_t width = static_cast<std::size_t>(1) << dimension;
     auto error = launch_connector_inplace_cooperative(buffer, width, dimension, start_index);
     if (error == cudaSuccess) {
@@ -1131,53 +1071,65 @@ class CudaInPlaceLabeler {
 
   cudaError_t merged_center_ingress_in_place(std::size_t dimension, const std::uint8_t *primary_inputs,
                                              std::uint8_t *ingress_workspace, std::uint64_t start_index) {
-    const auto &merged_plan = plan(dimension);
-    const auto &device_plan_copy = device_plan(dimension);
-    const std::size_t width = merged_plan.width;
+    profile_.merged_center_ingress_calls += 1;
+    const std::size_t width = static_cast<std::size_t>(1) << dimension;
     auto error = launch_merged_center_ingress_cooperative(
         primary_inputs,
         ingress_workspace,
         width,
         dimension,
-        start_index,
-        device_plan_copy.ingress_indices,
-        device_plan_copy.center_indices);
+        start_index);
     if (error == cudaSuccess) {
       return cudaSuccess;
     }
-    error = launch_internal1_inplace_indexed(
-        ingress_workspace, width, device_plan_copy.ingress_indices, start_index);
+    error = launch_internal1_inplace_contiguous(ingress_workspace, width, start_index);
     if (error != cudaSuccess) {
       return error;
     }
-    for (std::size_t layer = 1; layer <= dimension; ++layer) {
+    for (std::size_t layer = 1; layer < dimension; ++layer) {
+      const std::uint64_t layer_start = start_index + (layer * width);
       const std::size_t bit = static_cast<std::size_t>(1) << (dimension - layer);
-      error = launch_internal2_indexed(
+      error = launch_internal2_contiguous(
           ingress_workspace,
           width,
           bit,
-          device_plan_copy.ingress_indices + (layer * width),
+          layer_start);
+      if (error != cudaSuccess) {
+        return error;
+      }
+    }
+    if (dimension > 0) {
+      const std::size_t bit = 1;
+      error = launch_internal2_merged_phase(
+          ingress_workspace,
+          width,
+          bit,
+          dimension,
+          dimension,
+          false,
           start_index);
       if (error != cudaSuccess) {
         return error;
       }
     }
-    error = launch_combine_buffers(
+    error = launch_combine_buffers_merged_center(
         ingress_workspace,
         primary_inputs,
         width,
-        device_plan_copy.center_indices,
+        dimension,
         start_index);
     if (error != cudaSuccess) {
       return error;
     }
     for (std::size_t layer = 1; layer <= dimension; ++layer) {
       const std::size_t bit = static_cast<std::size_t>(1) << (dimension - layer);
-      error = launch_internal2_indexed(
+      error = launch_internal2_merged_phase(
           ingress_workspace,
           width,
           bit,
-          device_plan_copy.center_indices + (layer * width),
+          dimension,
+          layer,
+          true,
           start_index);
       if (error != cudaSuccess) {
         return error;
@@ -1187,6 +1139,7 @@ class CudaInPlaceLabeler {
   }
 
   cudaError_t connected_full(std::size_t level, std::uint8_t *buffer, std::uint64_t start_index) {
+    profile_.connected_full_calls += 1;
     if (level == 0) {
       return launch_internal1_inplace_contiguous(buffer, 1, start_index);
     }
@@ -1209,6 +1162,7 @@ class CudaInPlaceLabeler {
 
   cudaError_t connected_prefix(std::size_t level, std::size_t retain, std::uint8_t *buffer,
                                std::uint64_t start_index) {
+    profile_.connected_prefix_calls += 1;
     if (retain == 0) {
       return cudaSuccess;
     }
@@ -1236,6 +1190,7 @@ class CudaInPlaceLabeler {
   }
 
   cudaError_t standalone_base(std::size_t level, std::uint8_t *buffer, std::uint64_t start_index) {
+    profile_.standalone_base_calls += 1;
     if (level == 0) {
       return launch_source_labels(buffer, 1, start_index);
     }
@@ -1258,6 +1213,7 @@ class CudaInPlaceLabeler {
 
   cudaError_t standalone_right_prefix(std::size_t level, std::size_t retain, std::uint8_t *workspace,
                                       std::uint64_t start_index) {
+    profile_.standalone_right_prefix_calls += 1;
     if (retain == 0) {
       return cudaSuccess;
     }
@@ -1277,7 +1233,8 @@ class CudaInPlaceLabeler {
   }
 
  public:
-  cudaError_t finalize() const {
+  cudaError_t finalize() {
+    profile_.device_synchronizes += 1;
     return cudaDeviceSynchronize();
   }
 };
@@ -1296,10 +1253,14 @@ extern "C" int pose_cuda_fill_challenge_labels_in_place_blake3(
     void *target_pointer,
     std::size_t target_len,
     std::uint64_t *scratch_peak_bytes_out,
+    HbmProfileCounters *profile_out,
     char *error_buf,
     std::size_t error_buf_len) {
   if (error_buf != nullptr && error_buf_len > 0) {
     error_buf[0] = '\0';
+  }
+  if (profile_out != nullptr) {
+    *profile_out = HbmProfileCounters{};
   }
   if (label_count_m == 0 || output_bytes == 0 || output_bytes > kMaxLabelBytes ||
       session_seed_len > kMaxSessionSeedLen || graph_descriptor_digest_len > kMaxDigestLen ||
@@ -1342,5 +1303,8 @@ extern "C" int pose_cuda_fill_challenge_labels_in_place_blake3(
     return 4;
   }
   *scratch_peak_bytes_out = labeler.scratch_peak_bytes();
+  if (profile_out != nullptr) {
+    *profile_out = labeler.profiling_counters();
+  }
   return 0;
 }
