@@ -187,6 +187,7 @@ def test_recomputation_on_demand_is_detected_as_deadline_miss(monkeypatch) -> No
         graph,
         session_seed=plan.session_seed_hex,
         challenge_indices=challenge_indices,
+        label_engine="reference",
     )
     _configure_fake_runtime(
         monkeypatch,
@@ -240,6 +241,7 @@ def test_sparse_write_attack_is_detected_as_wrong_response(monkeypatch) -> None:
         graph,
         session_seed=plan.session_seed_hex,
         challenge_indices=challenge_indices,
+        label_engine="reference",
     )
     _configure_fake_runtime(
         monkeypatch,
@@ -281,6 +283,7 @@ def test_copy_in_after_challenge_attack_is_detected_as_wrong_response(monkeypatc
         graph,
         session_seed=plan.session_seed_hex,
         challenge_indices=challenge_indices,
+        label_engine="reference",
     )
     _configure_fake_runtime(
         monkeypatch,

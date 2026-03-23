@@ -71,6 +71,7 @@ def test_rechallenge_succeeds_and_releases(monkeypatch: pytest.MonkeyPatch) -> N
         graph,
         session_seed=record.session_seed_hex,
         challenge_indices=challenge_indices,
+        label_engine="reference",
     )
 
     cleanup_calls: list[str] = []

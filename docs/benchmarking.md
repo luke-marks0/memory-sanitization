@@ -54,6 +54,11 @@ local-memory capacity via `process_budget_dev`, that profile is development
 only. It must not be treated as production attacker-budget accounting or as a
 theorem-level statement about the prover's true full local memory.
 
+Optimization work should use the evidence trail in
+`docs/performance/optimization-roadmap.md` and
+`docs/performance/optimization-log.md` so benchmark history remains
+scientifically useful.
+
 ## Required Artifacts
 
 Archived benchmark bundles should include:

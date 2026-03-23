@@ -278,6 +278,7 @@ def test_host_pose_db_grpc_roundtrip(tmp_path: Path) -> None:
             graph,
             session_seed=plan.session_seed_hex,
             challenge_indices=challenge_indices,
+            label_engine="reference",
         )
         assert len(responses) == len(challenge_indices)
         for response, challenge_index, expected_label in zip(
@@ -396,6 +397,7 @@ def test_gpu_pose_db_grpc_roundtrip(monkeypatch, tmp_path: Path) -> None:
             graph,
             session_seed=plan.session_seed_hex,
             challenge_indices=challenge_indices,
+            label_engine="reference",
         )
         assert len(responses) == len(challenge_indices)
         for response, challenge_index, expected_label in zip(
@@ -527,6 +529,7 @@ def test_hybrid_pose_db_grpc_roundtrip(monkeypatch, tmp_path: Path) -> None:
             graph,
             session_seed=plan.session_seed_hex,
             challenge_indices=challenge_indices,
+            label_engine="reference",
         )
         expected_regions = ["host-0", "host-0", "gpu-0", "gpu-0"]
         for response, challenge_index, expected_label, expected_region in zip(

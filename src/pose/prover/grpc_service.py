@@ -14,7 +14,7 @@ from pose.common.errors import ProtocolError, ResourceFailure
 from pose.common.gpu_lease import GpuLeaseAttachment, attach_gpu_lease
 from pose.common.host_lease import HostLeaseAttachment, attach_host_lease
 from pose.graphs import PoseDbGraph, build_graph_descriptor, build_pose_db_graph
-from pose.hashing import internal_label_bytes, source_label_bytes
+from pose.hashing import LabelOracleContext
 from pose.protocol.grpc_codec import GRPC_PROTOCOL_VERSION, lease_record_from_proto, session_plan_from_proto
 from pose.protocol.messages import LeaseRecord, SessionPlan
 from pose.v1 import session_pb2, session_pb2_grpc
@@ -292,9 +292,14 @@ class PoseSessionServicer(session_pb2_grpc.PoseSessionServiceServicer):
                 for challenge_index, node in enumerate(state.graph.challenge_set)
             }
             successor_counts = array("I", [0]) * state.graph.node_count
-            for predecessors in state.graph.predecessors:
-                for predecessor in predecessors:
-                    successor_counts[predecessor] += 1
+
+            def count_successors(predecessor_count: int, predecessor0: int, predecessor1: int) -> None:
+                if predecessor_count >= 1:
+                    successor_counts[predecessor0] += 1
+                if predecessor_count == 2:
+                    successor_counts[predecessor1] += 1
+
+            state.graph.visit_predecessor_specs(count_successors)
             static_scratch_bytes = self._estimated_static_scratch_bytes(
                 successor_counts=successor_counts,
                 challenge_index_by_node=challenge_index_by_node,
@@ -322,51 +327,77 @@ class PoseSessionServicer(session_pb2_grpc.PoseSessionServiceServicer):
             scratch_labels: dict[int, bytearray] = {}
             scratch_entry_bytes_total = 0
             scratch_entry_bytes_by_node: dict[int, int] = {}
-            for node_index, predecessors in enumerate(state.graph.predecessors):
-                predecessor_labels: list[bytes] = []
-                for predecessor in predecessors:
-                    scratch_label = scratch_labels.get(predecessor)
-                    if scratch_label is not None:
-                        predecessor_labels.append(bytes(scratch_label))
-                        continue
-                    challenge_index = challenge_index_by_node.get(predecessor, -1)
-                    if challenge_index < 0:
-                        raise ProtocolError(
-                            f"Transient predecessor label for node {predecessor} was not retained during materialization."
-                        )
-                    region_id, local_slot_index = self._resolve_slot(state, challenge_index)
-                    predecessor_labels.append(
-                        state.attachments[region_id].read(
-                            length=label_width_bytes,
-                            offset=local_slot_index * label_width_bytes,
-                        )
+            label_oracle = LabelOracleContext.create(
+                session_seed=session_seed,
+                graph_descriptor_digest=state.graph.graph_descriptor_digest,
+                hash_backend=state.plan.hash_backend,
+                output_bytes=label_width_bytes,
+                max_predecessor_count=state.graph.max_predecessor_count,
+            )
+            node_index = 0
+
+            def load_predecessor_label(predecessor: int) -> bytes | bytearray | memoryview:
+                scratch_label = scratch_labels.get(predecessor)
+                if scratch_label is not None:
+                    return scratch_label
+                challenge_index = challenge_index_by_node.get(predecessor, -1)
+                if challenge_index < 0:
+                    raise ProtocolError(
+                        f"Transient predecessor label for node {predecessor} was not retained during materialization."
+                    )
+                region_id, local_slot_index = self._resolve_slot(state, challenge_index)
+                return state.attachments[region_id].read(
+                    length=label_width_bytes,
+                    offset=local_slot_index * label_width_bytes,
+                )
+
+            def maybe_cleanup_predecessor(predecessor: int) -> None:
+                nonlocal stage_buffer_cleanup_ms, scratch_entry_bytes_total
+                successor_counts[predecessor] -= 1
+                if successor_counts[predecessor] != 0:
+                    return
+                scratch_label = scratch_labels.pop(predecessor, None)
+                if scratch_label is None:
+                    return
+                scratch_entry_bytes_total -= scratch_entry_bytes_by_node.pop(predecessor, 0)
+                cleanup_started = perf_counter()
+                scratch_label[:] = b"\x00" * len(scratch_label)
+                stage_buffer_cleanup_ms += int((perf_counter() - cleanup_started) * 1000)
+
+            def materialize_node(predecessor_count: int, predecessor0: int, predecessor1: int) -> None:
+                nonlocal node_index, copy_to_host_ms, copy_to_hbm_ms, stage_buffer_cleanup_ms
+                nonlocal scratch_peak_bytes, scratch_entry_bytes_total
+                if predecessor_count == 0:
+                    predecessor_storage_bytes = 0
+                    label_bytes = label_oracle.source_label(
+                        node_index=node_index,
+                    )
+                elif predecessor_count == 1:
+                    predecessor_label0 = load_predecessor_label(predecessor0)
+                    predecessor_storage_bytes = getsizeof(predecessor_label0)
+                    label_bytes = label_oracle.internal_label_1(
+                        node_index=node_index,
+                        predecessor0=predecessor_label0,
+                    )
+                else:
+                    predecessor_label0 = load_predecessor_label(predecessor0)
+                    predecessor_label1 = load_predecessor_label(predecessor1)
+                    predecessor_storage_bytes = (
+                        getsizeof(predecessor_label0)
+                        + getsizeof(predecessor_label1)
+                    )
+                    label_bytes = label_oracle.internal_label_2(
+                        node_index=node_index,
+                        predecessor0=predecessor_label0,
+                        predecessor1=predecessor_label1,
                     )
                 scratch_peak_bytes = max(
                     scratch_peak_bytes,
                     static_scratch_bytes
                     + getsizeof(scratch_labels)
                     + scratch_entry_bytes_total
-                    + getsizeof(predecessor_labels)
-                    + sum(getsizeof(label_bytes) for label_bytes in predecessor_labels),
+                    + predecessor_storage_bytes,
                 )
-
-                if not predecessors:
-                    label_bytes = source_label_bytes(
-                        session_seed=session_seed,
-                        graph_descriptor_digest=state.graph.graph_descriptor_digest,
-                        node_index=node_index,
-                        hash_backend=state.plan.hash_backend,
-                        output_bytes=label_width_bytes,
-                    )
-                else:
-                    label_bytes = internal_label_bytes(
-                        session_seed=session_seed,
-                        graph_descriptor_digest=state.graph.graph_descriptor_digest,
-                        node_index=node_index,
-                        predecessor_labels=predecessor_labels,
-                        hash_backend=state.plan.hash_backend,
-                        output_bytes=label_width_bytes,
-                    )
 
                 challenge_index = challenge_index_by_node.get(node_index, -1)
                 if challenge_index >= 0:
@@ -394,15 +425,13 @@ class PoseSessionServicer(session_pb2_grpc.PoseSessionServiceServicer):
                         + getsizeof(label_bytes),
                     )
 
-                for predecessor in predecessors:
-                    successor_counts[predecessor] -= 1
-                    if successor_counts[predecessor] == 0:
-                        scratch_label = scratch_labels.pop(predecessor, None)
-                        if scratch_label is not None:
-                            scratch_entry_bytes_total -= scratch_entry_bytes_by_node.pop(predecessor, 0)
-                            cleanup_started = perf_counter()
-                            scratch_label[:] = b"\x00" * len(scratch_label)
-                            stage_buffer_cleanup_ms += int((perf_counter() - cleanup_started) * 1000)
+                if predecessor_count >= 1:
+                    maybe_cleanup_predecessor(predecessor0)
+                if predecessor_count == 2:
+                    maybe_cleanup_predecessor(predecessor1)
+                node_index += 1
+
+            state.graph.visit_predecessor_specs(materialize_node)
             label_generation_ms = int((perf_counter() - label_generation_started) * 1000)
             state.materialized = True
         except Exception as error:  # pragma: no cover - grpc abort

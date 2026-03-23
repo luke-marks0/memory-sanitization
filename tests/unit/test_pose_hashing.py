@@ -6,15 +6,21 @@ from pose.common.errors import ProtocolError
 from pose.graphs import build_pose_db_graph, compute_challenge_labels
 from pose.hashing import (
     DEFAULT_HASH_BACKEND,
+    LabelOracleContext,
     SUPPORTED_HASH_BACKENDS,
     encode_graph_descriptor_input,
     encode_internal_label_input,
     encode_source_label_input,
     graph_descriptor_oracle_bytes,
     hash_xof,
+    hash_xof_parts,
     internal_label_bytes,
+    internal_label_bytes_accelerated,
+    iter_internal_label_input_parts,
+    iter_source_label_input_parts,
     normalize_hash_backend,
     source_label_bytes,
+    source_label_bytes_accelerated,
 )
 
 
@@ -73,6 +79,55 @@ def test_domain_separated_encodings_are_deterministic_and_distinct() -> None:
     assert len({descriptor_input, source_input, internal_input}) == 3
 
 
+def test_iterated_label_encodings_match_reference_bytes() -> None:
+    source_parts = tuple(
+        iter_source_label_input_parts(
+            session_seed=memoryview(bytearray(b"\x11" * 32)),
+            graph_descriptor_digest=memoryview(bytearray(b"sha256:descriptor")),
+            node_index=3,
+        )
+    )
+    internal_parts = tuple(
+        iter_internal_label_input_parts(
+            session_seed=memoryview(bytearray(b"\x11" * 32)),
+            graph_descriptor_digest=memoryview(bytearray(b"sha256:descriptor")),
+            node_index=3,
+            predecessor_labels=(
+                memoryview(bytearray(b"\x22" * 32)),
+                memoryview(bytearray(b"\x33" * 32)),
+            ),
+            predecessor_count=2,
+        )
+    )
+
+    assert b"".join(bytes(part) for part in source_parts) == encode_source_label_input(
+        session_seed=b"\x11" * 32,
+        graph_descriptor_digest=b"sha256:descriptor",
+        node_index=3,
+    )
+    assert b"".join(bytes(part) for part in internal_parts) == encode_internal_label_input(
+        session_seed=b"\x11" * 32,
+        graph_descriptor_digest=b"sha256:descriptor",
+        node_index=3,
+        predecessor_labels=[b"\x22" * 32, b"\x33" * 32],
+    )
+
+
+@pytest.mark.parametrize("hash_backend", ["blake3-xof", "shake256"])
+def test_hash_xof_parts_matches_hash_xof(hash_backend: str) -> None:
+    parts = (
+        b"pose",
+        bytearray(b"-db"),
+        memoryview(bytearray(b"-streaming-xof")),
+    )
+
+    assert hash_xof_parts(parts, hash_backend=hash_backend, length=48) == hash_xof(
+        b"".join(bytes(part) for part in parts),
+        hash_backend=hash_backend,
+        length=48,
+    )
+
+
 def test_label_hash_helpers_bind_backend_and_inputs() -> None:
     source = source_label_bytes(
         session_seed=b"\xaa" * 32,
@@ -99,6 +154,92 @@ def test_label_hash_helpers_bind_backend_and_inputs() -> None:
 
     assert source != source_wrong_index
     assert source != internal
+
+
+@pytest.mark.parametrize("hash_backend", ["blake3-xof", "shake256"])
+def test_accelerated_label_helpers_match_reference(hash_backend: str) -> None:
+    source_reference = source_label_bytes(
+        session_seed=b"\xaa" * 32,
+        graph_descriptor_digest="sha256:test-descriptor",
+        node_index=7,
+        hash_backend=hash_backend,
+        output_bytes=32,
+    )
+    source_accelerated = source_label_bytes_accelerated(
+        session_seed=b"\xaa" * 32,
+        graph_descriptor_digest="sha256:test-descriptor",
+        node_index=7,
+        hash_backend=hash_backend,
+        output_bytes=32,
+    )
+    predecessor_labels = (
+        memoryview(bytearray(b"\x01" * 32)),
+        memoryview(bytearray(b"\x02" * 32)),
+    )
+    internal_reference = internal_label_bytes(
+        session_seed=b"\xaa" * 32,
+        graph_descriptor_digest="sha256:test-descriptor",
+        node_index=7,
+        predecessor_labels=[bytes(label) for label in predecessor_labels],
+        hash_backend=hash_backend,
+        output_bytes=32,
+    )
+    internal_accelerated = internal_label_bytes_accelerated(
+        session_seed=b"\xaa" * 32,
+        graph_descriptor_digest="sha256:test-descriptor",
+        node_index=7,
+        predecessor_labels=(label for label in predecessor_labels),
+        predecessor_count=len(predecessor_labels),
+        hash_backend=hash_backend,
+        output_bytes=32,
+    )
+
+    assert source_accelerated == source_reference
+    assert internal_accelerated == internal_reference
+
+
+@pytest.mark.parametrize("hash_backend", ["blake3-xof", "shake256"])
+def test_label_oracle_fixed_templates_match_reference(hash_backend: str) -> None:
+    context = LabelOracleContext.create(
+        session_seed=b"\xaa" * 32,
+        graph_descriptor_digest=b"sha256:test-descriptor",
+        hash_backend=hash_backend,
+        output_bytes=32,
+        max_predecessor_count=2,
+    )
+    predecessor0 = bytearray(b"\x01" * 32)
+    predecessor1 = memoryview(bytearray(b"\x02" * 32))
+
+    assert context.source_label(node_index=7) == source_label_bytes(
+        session_seed=b"\xaa" * 32,
+        graph_descriptor_digest=b"sha256:test-descriptor",
+        node_index=7,
+        hash_backend=hash_backend,
+        output_bytes=32,
+    )
+    assert context.internal_label_1(
+        node_index=7,
+        predecessor0=predecessor0,
+    ) == internal_label_bytes(
+        session_seed=b"\xaa" * 32,
+        graph_descriptor_digest=b"sha256:test-descriptor",
+        node_index=7,
+        predecessor_labels=[bytes(predecessor0)],
+        hash_backend=hash_backend,
+        output_bytes=32,
+    )
+    assert context.internal_label_2(
+        node_index=7,
+        predecessor0=predecessor0,
+        predecessor1=predecessor1,
+    ) == internal_label_bytes(
+        session_seed=b"\xaa" * 32,
+        graph_descriptor_digest=b"sha256:test-descriptor",
+        node_index=7,
+        predecessor_labels=[bytes(predecessor0), bytes(predecessor1)],
+        hash_backend=hash_backend,
+        output_bytes=32,
+    )
 
 
 def test_graph_descriptor_oracle_binds_hash_backend() -> None:
