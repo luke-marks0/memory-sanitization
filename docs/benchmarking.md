@@ -32,6 +32,10 @@ The required named profiles are:
 - `eight-h100-hbm-max`
 - `eight-h100-hybrid-max`
 
+The repository also includes development-only smoke profiles such as
+`single-h100-hbm-small` and `single-h100-hybrid-small`. These are for local
+validation only and do not replace the required production-oriented profiles.
+
 Each profile should define:
 
 - target devices and reserve policy;
@@ -44,6 +48,11 @@ Each profile should define:
 - calibration policy;
 - cleanup policy;
 - repetition count.
+
+If a profile lowers the reported attacker budget `M` below the machine's full
+local-memory capacity via `process_budget_dev`, that profile is development
+only. It must not be treated as production attacker-budget accounting or as a
+theorem-level statement about the prover's true full local memory.
 
 ## Required Artifacts
 

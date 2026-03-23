@@ -9,4 +9,6 @@ def test_hardware_profiles_and_docs_exist() -> None:
     assert (root / "docs" / "hardware" / "eight-h100.md").exists()
     assert (root / "bench_profiles" / "single-h100-host-max.yaml").exists()
     assert (root / "bench_profiles" / "single-h100-hbm-max.yaml").exists()
+    assert (root / "bench_profiles" / "single-h100-hybrid-max.yaml").exists()
+    assert (root / "bench_profiles" / "single-h100-hybrid-small.yaml").exists()
     assert (root / "bench_profiles" / "eight-h100-hybrid-max.yaml").exists()

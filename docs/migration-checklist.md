@@ -160,7 +160,7 @@ Cutover rule:
 - [x] Add protocol tests for malformed messages, duplicate session IDs, timeout handling, and fast-phase transport reporting.
 - [x] Add in-place and staging tests that reject hidden `O(m)` shadow state.
 - [x] Add adversarial tests for recomputation-on-demand, hidden host shadows, sparse writes, copy-in after challenge, and bad `M` accounting on the host-only path.
-- [ ] Add adversarial tests for hidden HBM shadows.
+- [x] Add adversarial tests for hidden HBM shadows.
 - [x] Update hardware test scaffolding for single-H100 host-only profiles and documentation.
 - [ ] Update hardware tests for single-H100 HBM-only, single-H100 hybrid, 8xH100 HBM-only, and 8xH100 hybrid.
 - [x] Update performance tests to track label generation time, HBM transfer time, fast-phase latency, `q/gamma` margin, coverage fraction, and total runtime.

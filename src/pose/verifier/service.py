@@ -142,6 +142,10 @@ def _result_from_plan(plan: SessionPlan) -> SessionResult:
         result.operational_claim_notes = [
             "operational claim is about verifier-leased host regions for challenged slots",
         ]
+    elif plan.regions and all(region.region_type == "gpu" for region in plan.regions):
+        result.operational_claim_notes = [
+            "operational claim is about verifier-leased GPU HBM regions for challenged slots",
+        ]
     else:
         result.operational_claim_notes = [
             "operational claim is about verifier-leased mixed host/HBM regions for challenged slots",

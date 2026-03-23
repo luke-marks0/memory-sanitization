@@ -9,7 +9,7 @@ from pose.benchmarks.profiles import BenchmarkProfile
 from pose.common.errors import ProtocolError
 from pose.graphs import build_graph_descriptor
 from pose.protocol.messages import ChallengePolicy, CleanupPolicy, DeadlinePolicy, LeaseRecord, RegionPlan, SessionPlan
-from pose.verifier.service import VerifierService
+from pose.verifier.service import VerifierService, _result_from_plan
 
 
 def test_run_plan_file_executes_host_pose_db_plan(tmp_path: Path) -> None:
@@ -128,6 +128,60 @@ retain_session: false
     assert result.verdict == "CALIBRATION_INVALID"
     assert result.success is False
     assert "q=4 and gamma=4" in result.notes[-1]
+
+
+def test_result_from_plan_reports_hbm_only_operational_claims(monkeypatch) -> None:
+    descriptor = build_graph_descriptor(
+        label_count_m=8,
+        graph_parameter_n=2,
+        gamma=4,
+        hash_backend="blake3-xof",
+        label_width_bits=256,
+    )
+    session_plan = SessionPlan(
+        session_id="gpu-only-session",
+        session_seed_hex="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        profile_name="single-h100-hbm-max",
+        graph_family="pose-db-drg-v1",
+        graph_parameter_n=2,
+        label_count_m=8,
+        gamma=4,
+        label_width_bits=256,
+        hash_backend="blake3-xof",
+        graph_descriptor_digest=descriptor.digest,
+        challenge_policy=ChallengePolicy(
+            rounds_r=4,
+            target_success_bound=1.0e-9,
+            sample_with_replacement=True,
+        ),
+        deadline_policy=DeadlinePolicy(response_deadline_us=2_500, session_timeout_ms=60_000),
+        cleanup_policy=CleanupPolicy(zeroize=True, verify_zeroization=False),
+        adversary_model="general",
+        attacker_budget_bytes_assumed=16,
+        q_bound=3,
+        regions=[
+            RegionPlan(
+                region_id="gpu-0",
+                region_type="gpu",
+                usable_bytes=256,
+                slot_count=8,
+                covered_bytes=256,
+                slack_bytes=0,
+                gpu_device=0,
+            )
+        ],
+    )
+
+    monkeypatch.setattr("pose.verifier.service.detect_host_memory_bytes", lambda: 0)
+
+    result = _result_from_plan(session_plan)
+
+    assert result.operational_claim_notes == [
+        "operational claim is about verifier-leased GPU HBM regions for challenged slots",
+    ]
+    assert result.host_covered_bytes == 0
+    assert result.gpu_devices == [0]
+    assert result.gpu_covered_bytes_by_device == {"0": 256}
 
 
 def test_run_plan_file_rejects_invalid_soundness_ratio(tmp_path: Path) -> None:

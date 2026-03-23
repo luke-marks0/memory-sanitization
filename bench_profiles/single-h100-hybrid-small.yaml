@@ -1,12 +1,12 @@
-name: single-h100-hbm-small
+name: single-h100-hybrid-small
 benchmark_class: cold
 target_devices:
-  host: false
+  host: true
   gpus: [0]
 reserve_policy:
-  host_bytes: 0
-  per_gpu_bytes: 131072
-host_target_fraction: 0.0
+  host_bytes: 65536
+  per_gpu_bytes: 65536
+host_target_fraction: 1.0
 per_gpu_target_fraction: 1.0
 w_bits: 256
 graph_family: pose-db-drg-v1

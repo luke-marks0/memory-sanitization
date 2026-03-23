@@ -23,6 +23,17 @@ The foundation ships these single-H100 profiles:
 - `single-h100-hbm-max`
 - `single-h100-hybrid-max`
 
+The repository also ships `single-h100-hbm-small` as a development-only HBM
+smoke profile. It uses `process_budget_dev`, keeps the targeted GPU visible,
+and lowers the reported attacker budget for practical local regression. It is
+not a production or theorem-level substitute for `single-h100-hbm-max`.
+
+The repository also ships `single-h100-hybrid-small` as a development-only
+hybrid host plus HBM smoke profile. It uses `process_budget_dev` to bound the
+host-side attacker budget for local testing while keeping the targeted GPU
+visible. It is not a production or theorem-level substitute for
+`single-h100-hybrid-max`.
+
 The single-gpu HBM profile now measures available HBM at runtime and plans
 toward the configured target fill ratio without an artificial 1 MiB cap.
 Benchmark runs archive result JSON, summary metrics, logs, environment

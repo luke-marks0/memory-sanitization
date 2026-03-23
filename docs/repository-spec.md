@@ -233,7 +233,7 @@ The verifier must report `M` honestly. It must not silently assume that an uncha
 
 #### 6.5.1 Development-only lowered-`M` mode
 
-For host-only development and test profiles, the repository may support a
+For development and test profiles, the repository may support a
 development-only `process_budget_dev` mode in which the configured attacker
 budget `M_dev` is set artificially below the machine's full local-memory
 budget.
@@ -251,7 +251,8 @@ When this mode is used:
 - the verifier must record the configured development attacker budget;
 - the prover launcher may apply best-effort process-local limits such as
   `RLIMIT_AS`, `RLIMIT_MEMLOCK`, and `RLIMIT_FSIZE`;
-- the prover launcher may hide GPUs from the prover process;
+- the prover launcher may hide untargeted GPUs from the prover process;
+- HBM-only development profiles must keep their targeted GPUs visible;
 - production profiles must not use this mode.
 
 The process-local limit may be larger than the reported development attacker
