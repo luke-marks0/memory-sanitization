@@ -13,7 +13,12 @@ from pose.common.gpu_lease import GpuLease, create_gpu_lease, release_gpu_lease
 from pose.common.hashing import sha256_hex
 from pose.common.host_lease import HostLease, create_host_lease, release_host_lease
 from pose.common.sandbox import ProverSandboxPolicy
-from pose.graphs import PoseDbGraph, build_pose_db_graph, compute_challenge_labels
+from pose.graphs import (
+    PoseDbGraph,
+    build_pose_db_graph,
+    compute_challenge_labels,
+    preferred_runtime_label_engine,
+)
 from pose.protocol.codec import load_json_file
 from pose.protocol.messages import LeaseRecord, SessionPlan
 from pose.protocol.result_schema import SessionResult, bootstrap_result
@@ -587,6 +592,7 @@ class VerifierService:
                 graph,
                 session_seed=session_plan.session_seed_hex,
                 challenge_indices=challenge_indices,
+                label_engine=preferred_runtime_label_engine(),
             )
             result.timings_ms["expected_response_prep"] = int((perf_counter() - expected_started) * 1000)
 

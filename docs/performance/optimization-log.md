@@ -14,6 +14,10 @@ evidence, there is no accepted speedup.
 4. Record the tests or parity gates run with the change.
 5. If a change speeds up one phase but regresses total runtime or correctness,
    record that explicitly and reject or revise it.
+6. Smoke-scale profiles are diagnostic only. A win that is specific to
+   smoke-scale sessions, or appears only on smoke-scale sessions, must not be
+   accepted into default runtime selection unless it also improves
+   representative larger-scale profiles for the same memory tier.
 
 ## Summary Script
 
@@ -1218,6 +1222,1076 @@ PYTHONPATH=src .venv/bin/python -m pose.cli.main bench run --profile /tmp/single
   do not spend more time on pure-Python hash-state cloning unless a backend
   exposes a much cheaper copy/finalize path; the next optimization target
   should move back to prover bookkeeping or a native label engine
+
+## Entry 010: Compact Successor Bookkeeping And Gated Verifier Streaming
+
+- date:
+  2026-03-23
+- git head:
+  `7f12e5fd8b41c8dca2f7b5cf8053c5db751a3fe3`
+- status:
+  accepted
+- hypothesis:
+  compact successor bookkeeping should reduce prover-side materialization
+  overhead and scratch pressure, while a streaming verifier challenge-label
+  path should be available for very large profiles without forcing a slowdown
+  on smaller profiles
+
+#### Change Scope
+
+- files:
+  `src/pose/graphs/labeling.py`,
+  `src/pose/prover/grpc_service.py`,
+  `tests/parity/test_accelerated_labeling.py`
+- profiles benchmarked:
+  `single-h100-hbm-2mib`
+- supporting hardware check:
+  `single-h100-hbm-small`
+
+#### Commands
+
+```bash
+PYTHONPATH=src .venv/bin/python -m pytest \
+  tests/unit/test_pose_hashing.py \
+  tests/unit/test_pose_graphs.py \
+  tests/parity/test_accelerated_labeling.py \
+  tests/unit/test_grpc_pose_db_runtime.py \
+  tests/unit/test_rechallenge.py \
+  tests/unit/test_verifier_service.py \
+  tests/unit/test_calibration.py \
+  tests/unit/test_paper_conformance.py \
+  tests/adversarial/test_memory_accounting.py \
+  tests/adversarial/test_host_fast_phase_attacks.py \
+  tests/integration/test_cli_smoke.py
+
+PYTHONPATH=src .venv/bin/python -m pose.cli.main bench run --profile /tmp/single-h100-hbm-2mib.yaml
+PYTHONPATH=src .venv/bin/python -m pose.cli.main bench run --profile single-h100-hbm-small
+```
+
+#### Before Artifacts
+
+- prior accepted large-profile artifact:
+  `.pose/benchmarks/single-h100-hbm-2mib/20260323T070418Z`
+
+#### After Artifacts
+
+- accepted large-profile artifact:
+  `.pose/benchmarks/single-h100-hbm-2mib/20260323T084206Z`
+- supporting smoke artifact:
+  `.pose/benchmarks/single-h100-hbm-small/20260323T084206Z`
+- rejected intermediate always-on streaming artifacts:
+  `.pose/benchmarks/single-h100-hbm-small/20260323T083536Z`
+  `.pose/benchmarks/single-h100-hbm-2mib/20260323T083846Z`
+
+#### Metric Delta
+
+Accepted comparison: `20260323T070418Z -> 20260323T084206Z`
+
+| metric | before | after | delta |
+| --- | ---: | ---: | ---: |
+| total ms | 102,977 | 102,540 | -437 (-0.42%) |
+| label_generation ms | 68,154 | 64,909 | -3,245 (-4.76%) |
+| expected_response_prep ms | 34,136 | 36,782 | +2,646 (+7.75%) |
+| graph_construction ms | 28 | 43 | +15 (+53.57%) |
+| fast_phase ms | 205 | 207 | +2 (+0.98%) |
+| verifier_cpu ms | 34,493 | 37,164 | +2,671 (+7.74%) |
+| q/gamma | 0.05649 | 0.02832 | -0.02817 (-49.86%) |
+| scratch_peak_bytes | 80,736,569 | 32,764,200 | -47,972,369 (-59.42%) |
+
+#### Correctness Gates
+
+- tests:
+  `99` focused tests passed across hashing, graph parity,
+  accelerated-labeling parity, runtime, rechallenge, verifier, calibration,
+  paper-conformance, memory accounting, host fast-phase adversarial, and CLI
+  smoke slices; a final fast slice after gating the streaming verifier path
+  passed `73` more tests
+- parity checks:
+  added a forced-streaming parity test so the verifier challenge-label
+  streaming path remains byte-identical to the preserved reference path even
+  though it is not the default on current smaller profiles
+- hardware checks:
+  real H100 `single-h100-hbm-2mib` remained `SUCCESS` with full
+  `2,097,152` covered HBM bytes and valid `q < gamma`;
+  `single-h100-hbm-small` also remained `SUCCESS`
+
+#### Decision
+
+- accepted because:
+  compact successor bookkeeping reduced prover `label_generation` and cut
+  prover scratch by about `59%` on the large HBM profile, while preserving a
+  small end-to-end win overall
+- important nuance:
+  an always-on verifier-streaming path was benchmarked first and was slower on
+  current smoke and `2 MiB` profiles; the accepted implementation therefore
+  keeps verifier streaming as a large-profile fallback that activates only when
+  the full verifier label buffer would otherwise exceed `1 GiB`
+- follow-up:
+  the next optimization should target either a faster large-profile verifier
+  streaming implementation, or a native label engine that can make both prover
+  and verifier full-graph passes cheaper without the current Python overhead
+
+## Entry 011: Rust Native Label Engine With Stage-Free Prover Streaming
+
+- date:
+  2026-03-23
+- git head:
+  `39199965abc417b228298799ec2b0fd5e50dbb69`
+- status:
+  accepted
+- hypothesis:
+  a coarse-grained Rust engine should beat the current Python fast paths if it
+  owns formula-driven graph traversal and label hashing directly, while Python
+  keeps only orchestration and attachment I/O; the prover path must avoid a
+  full host-side challenge buffer so `declared_stage_copy_bytes` stays zero
+
+#### Change Scope
+
+- files:
+  `native/pose_native_label_engine/Cargo.toml`,
+  `native/pose_native_label_engine/src/lib.rs`,
+  `src/pose/graphs/native_engine.py`,
+  `src/pose/graphs/labeling.py`,
+  `src/pose/graphs/__init__.py`,
+  `src/pose/prover/grpc_service.py`,
+  `src/pose/prover/service.py`,
+  `src/pose/verifier/service.py`,
+  `src/pose/verifier/rechallenge.py`,
+  `tests/parity/test_native_labeling.py`,
+  `scripts/build_native_label_engine.sh`,
+  `pyproject.toml`
+- profiles benchmarked:
+  `single-h100-hbm-2mib`
+- supporting hardware check:
+  `single-h100-hbm-small`
+
+#### Commands
+
+```bash
+scripts/build_native_label_engine.sh
+
+PYTHONPATH=src .venv/bin/python -m pytest \
+  tests/parity/test_native_labeling.py \
+  tests/parity/test_accelerated_labeling.py \
+  tests/unit/test_pose_graphs.py \
+  tests/unit/test_pose_hashing.py \
+  tests/unit/test_grpc_pose_db_runtime.py \
+  tests/unit/test_verifier_service.py \
+  tests/unit/test_rechallenge.py \
+  tests/unit/test_calibration.py \
+  tests/unit/test_paper_conformance.py \
+  tests/adversarial/test_memory_accounting.py \
+  tests/adversarial/test_host_fast_phase_attacks.py \
+  tests/integration/test_cli_smoke.py
+
+PYTHONPATH=src .venv/bin/python -m pose.cli.main bench run --profile single-h100-hbm-small
+PYTHONPATH=src .venv/bin/python -m pose.cli.main bench run --profile /tmp/single-h100-hbm-2mib.yaml
+```
+
+#### Before Artifacts
+
+- prior accepted large-profile artifact:
+  `.pose/benchmarks/single-h100-hbm-2mib/20260323T084206Z`
+
+#### After Artifacts
+
+- initial native artifact:
+  `.pose/benchmarks/single-h100-hbm-2mib/20260323T090853Z`
+- accepted refined large-profile artifact:
+  `.pose/benchmarks/single-h100-hbm-2mib/20260323T091111Z`
+- supporting smoke artifact:
+  `.pose/benchmarks/single-h100-hbm-small/20260323T090853Z`
+
+#### Metric Delta
+
+Accepted comparison: `20260323T084206Z -> 20260323T091111Z`
+
+| metric | before | after | delta |
+| --- | ---: | ---: | ---: |
+| total ms | 102,540 | 10,077 | -92,463 (-90.17%) |
+| label_generation ms | 64,909 | 5,211 | -59,698 (-91.97%) |
+| expected_response_prep ms | 36,782 | 4,109 | -32,673 (-88.83%) |
+| graph_construction ms | 43 | 26 | -17 (-39.53%) |
+| fast_phase ms | 207 | 204 | -3 (-1.45%) |
+| verifier_cpu ms | 37,164 | 4,329 | -32,835 (-88.35%) |
+| q/gamma | 0.02832 | 0.04840 | +0.02008 (+70.91%) |
+| scratch_peak_bytes | 32,764,200 | 82,444,933 | +49,680,733 (+151.63%) |
+
+Refinement comparison inside the native engine: `20260323T090853Z -> 20260323T091111Z`
+
+| metric | initial native | refined native | delta |
+| --- | ---: | ---: | ---: |
+| total ms | 10,592 | 10,077 | -515 (-4.86%) |
+| label_generation ms | 5,770 | 5,211 | -559 (-9.69%) |
+| expected_response_prep ms | 4,148 | 4,109 | -39 (-0.94%) |
+| scratch_peak_bytes | 146,408,061 | 82,444,933 | -63,963,128 (-43.69%) |
+
+#### Correctness Gates
+
+- tests:
+  `104` focused tests passed across native parity, accelerated parity, graph
+  parity, hashing, runtime, verifier, rechallenge, calibration,
+  paper-conformance, memory accounting, host fast-phase adversarial, and CLI
+  smoke slices; a final native-specific sanity slice passed `17` more tests
+- parity checks:
+  added direct native-engine parity against the preserved reference path for
+  both `blake3-xof` and `shake256`, and kept the runtime/verifier slices green
+  with the native engine preferred at execution time
+- hardware checks:
+  real H100 `single-h100-hbm-2mib` remained `SUCCESS` with full
+  `2,097,152` covered HBM bytes, `declared_stage_copy_bytes=0`, and valid
+  `q < gamma`; `single-h100-hbm-small` also remained `SUCCESS`
+
+#### Decision
+
+- accepted because:
+  the Rust + PyO3 architecture moved the hot path across a coarse boundary:
+  formula-driven graph traversal and label hashing now happen in native code,
+  while Python keeps only protocol orchestration and attachment writes
+- architecture rationale:
+  a stage-free prover callback path was chosen over returning a full challenge
+  buffer to Python, because that would have introduced a host-side stage copy
+  and changed the runtime accounting story; the accepted native prover path
+  streams challenge labels directly into the existing attachment writes and
+  keeps `declared_stage_copy_bytes=0`
+- important nuance:
+  the first accepted native draft used an `usize`-wide live-slot table and
+  reached about `146 MB` scratch on the `2 MiB` profile; narrowing that table
+  to `u32` kept the speed-up and cut native scratch by about `44%`
+- follow-up:
+  the next native-engine work should target scratch-shape reductions beyond the
+  current `u32` slot table, plus a cleaner packaging story so the Rust module
+  can be built or detected without manual environment setup
+
+## Entry 012: Native In-Place Labeling For Host Destination Slots
+
+- date:
+  2026-03-23
+- git head:
+  `39199965abc417b228298799ec2b0fd5e50dbb69`
+- status:
+  accepted
+- hypothesis:
+  the native engine should be able to realize the paper-style in-place
+  schedule for a contiguous host challenge array, using the destination slots
+  themselves as workspace instead of maintaining a separate `O(m)` scratch
+  label store; that should materially reduce prover scratch and may also speed
+  up verifier challenge-array generation because the same in-place scheduler
+  can replace the old native scratch-store path.
+
+#### Change Scope
+
+- files:
+  `docs/repository-spec.md`,
+  `native/pose_native_label_engine/src/lib.rs`,
+  `src/pose/graphs/native_engine.py`,
+  `src/pose/prover/grpc_service.py`,
+  `tests/parity/test_native_labeling.py`
+- profiles benchmarked:
+  `single-host-2mib`
+- supporting hardware check:
+  `single-h100-hbm-2mib`
+
+#### Commands
+
+```bash
+scripts/build_native_label_engine.sh
+
+PYTHONPATH=src .venv/bin/python -m pytest \
+  tests/parity/test_native_labeling.py \
+  tests/parity/test_accelerated_labeling.py \
+  tests/unit/test_pose_hashing.py \
+  tests/unit/test_pose_graphs.py \
+  tests/unit/test_grpc_pose_db_runtime.py \
+  tests/unit/test_verifier_service.py \
+  tests/unit/test_rechallenge.py \
+  tests/integration/test_cli_smoke.py \
+  tests/unit/test_calibration.py \
+  tests/unit/test_paper_conformance.py \
+  tests/adversarial/test_memory_accounting.py \
+  tests/adversarial/test_host_fast_phase_attacks.py
+
+PYTHONPATH=src .venv/bin/python -m pose.cli.main bench run --profile /tmp/single-host-2mib.yaml
+PYTHONPATH=src .venv/bin/python -m pose.cli.main bench run --profile /tmp/single-h100-hbm-2mib.yaml
+```
+
+#### Before Artifacts
+
+- host baseline:
+  `.pose/benchmarks/single-host-2mib/20260323T095353Z`
+- HBM baseline:
+  `.pose/benchmarks/single-h100-hbm-2mib/20260323T091111Z`
+
+#### After Artifacts
+
+- accepted host in-place artifact:
+  `.pose/benchmarks/single-host-2mib/20260323T100342Z`
+- supporting HBM artifact:
+  `.pose/benchmarks/single-h100-hbm-2mib/20260323T100342Z`
+
+#### Metric Delta
+
+Accepted comparison for the real in-place prover path: `single-host-2mib`,
+`20260323T095353Z -> 20260323T100342Z`
+
+| metric | before | after | delta |
+| --- | ---: | ---: | ---: |
+| total ms | 8,964 | 7,951 | -1,013 (-11.30%) |
+| label_generation ms | 4,358 | 3,699 | -659 (-15.12%) |
+| expected_response_prep ms | 4,094 | 3,769 | -325 (-7.94%) |
+| graph_construction ms | 26 | 41 | +15 (+57.69%) |
+| fast_phase ms | 205 | 206 | +1 (+0.49%) |
+| verifier_cpu ms | 4,291 | 4,019 | -272 (-6.34%) |
+| q/gamma | 0.04977 | 0.02936 | -0.02042 (-41.02%) |
+| scratch_peak_bytes | 82,444,933 | 7,865,015 | -74,579,918 (-90.46%) |
+
+Supporting comparison for HBM, where only verifier challenge-array generation
+became in-place and the prover still uses the stage-free streaming callback:
+`single-h100-hbm-2mib`, `20260323T091111Z -> 20260323T100342Z`
+
+| metric | before | after | delta |
+| --- | ---: | ---: | ---: |
+| total ms | 10,077 | 10,003 | -74 (-0.73%) |
+| label_generation ms | 5,211 | 5,461 | +250 (+4.80%) |
+| expected_response_prep ms | 4,109 | 3,841 | -268 (-6.52%) |
+| verifier_cpu ms | 4,329 | 4,114 | -215 (-4.97%) |
+| scratch_peak_bytes | 82,444,933 | 82,444,933 | 0 (+0.00%) |
+
+#### Correctness Gates
+
+- tests:
+  `106` focused tests passed across native parity, accelerated parity,
+  hashing, graph parity, grpc runtime, verifier, rechallenge, CLI smoke,
+  calibration, paper conformance, memory accounting, and host fast-phase
+  adversarial slices
+- parity checks:
+  added a direct in-place host-fill parity test so the new native
+  destination-slot path remains byte-identical to the preserved reference
+  challenge array for both `blake3-xof` and `shake256`
+- hardware checks:
+  real host `single-host-2mib` remained `SUCCESS` with
+  `declared_stage_copy_bytes=0`; real H100 `single-h100-hbm-2mib` also
+  remained `SUCCESS`
+
+#### Decision
+
+- accepted because:
+  contiguous host sessions now use the destination host slots themselves as
+  the native workspace, which is both more faithful to the paper’s in-place
+  schedule and much cheaper in scratch than the previous native scratch-store
+  path
+- architecture rationale:
+  the accepted implementation reuses one recursive in-place scheduler in Rust
+  for both verifier challenge-array construction and host-only prover
+  materialization, while preserving the old stage-free callback path for HBM
+  and mixed-region sessions that cannot yet realize the destination array
+  directly from CPU-native code
+- important nuance:
+  this change does **not** make HBM materialization paper-faithful in-place;
+  HBM still streams labels from CPU-native computation into GPU memory, so the
+  main accepted benchmark for in-place labeling is the host-only profile
+- follow-up:
+  a faithful in-place HBM prover path will need direct device-side execution
+  over the leased HBM slots rather than a host-side producer plus copy path
+
+## Entry 013: CUDA HBM In-Place Prover Materialization
+
+- date:
+  2026-03-23
+- git head:
+  `39199965abc417b228298799ec2b0fd5e50dbb69`
+- status:
+  needs-follow-up
+- hypothesis:
+  a direct device-side in-place HBM materializer should eliminate the
+  host-native producer plus copy path for contiguous GPU-only sessions,
+  drastically reduce prover scratch, and remove `copy_to_hbm`; if the CUDA
+  kernels and recursive schedule are efficient enough, it may also improve the
+  end-to-end HBM profile.
+
+#### Change Scope
+
+- files:
+  `native/pose_native_label_engine/Cargo.toml`,
+  `native/pose_native_label_engine/build.rs`,
+  `native/pose_native_label_engine/src/hbm_inplace.cu`,
+  `native/pose_native_label_engine/src/lib.rs`,
+  `src/pose/graphs/native_engine.py`,
+  `src/pose/prover/grpc_service.py`,
+  `tests/parity/test_native_labeling.py`
+- profiles benchmarked:
+  `single-h100-hbm-2mib`
+
+#### Commands
+
+```bash
+scripts/build_native_label_engine.sh
+
+PYTHONPATH=src .venv/bin/python -m pytest \
+  tests/parity/test_native_labeling.py -q
+
+PYTHONPATH=src .venv/bin/python -m pytest \
+  tests/unit/test_grpc_pose_db_runtime.py -q
+
+PYTHONPATH=src .venv/bin/python -m pytest \
+  tests/unit/test_verifier_service.py \
+  tests/unit/test_rechallenge.py \
+  tests/integration/test_cli_smoke.py \
+  tests/unit/test_calibration.py \
+  tests/unit/test_paper_conformance.py \
+  tests/adversarial/test_memory_accounting.py \
+  tests/adversarial/test_host_fast_phase_attacks.py -q
+
+PYTHONPATH=src .venv/bin/python -m pose.cli.main bench run --profile /tmp/single-h100-hbm-2mib.yaml
+```
+
+#### Before Artifacts
+
+- prior accepted HBM baseline:
+  `.pose/benchmarks/single-h100-hbm-2mib/20260323T100342Z`
+
+#### After Artifacts
+
+- CUDA HBM in-place artifact:
+  `.pose/benchmarks/single-h100-hbm-2mib/20260323T105723Z`
+
+#### Metric Delta
+
+Comparison for real-H100 HBM prover materialization:
+`single-h100-hbm-2mib`, `20260323T100342Z -> 20260323T105723Z`
+
+| metric | before | after | delta |
+| --- | ---: | ---: | ---: |
+| total ms | 10,003 | 21,056 | +11,053 (+110.50%) |
+| label_generation ms | 5,461 | 16,370 | +10,909 (+199.76%) |
+| expected_response_prep ms | 3,841 | 3,992 | +151 (+3.93%) |
+| graph_construction ms | 48 | 41 | -7 (-14.58%) |
+| fast_phase ms | 205 | 206 | +1 (+0.49%) |
+| verifier_cpu ms | 4,114 | 4,287 | +173 (+4.21%) |
+| copy_to_hbm ms | 23 | 0 | -23 (-100.00%) |
+| q/gamma | 0.02838 | 0.02832 | -0.00006 (-0.22%) |
+| scratch_peak_bytes | 82,444,933 | 3,735,764 | -78,709,169 (-95.47%) |
+
+#### Correctness Gates
+
+- tests:
+  the CUDA-enabled native engine rebuilt successfully; `56` focused tests
+  passed across native parity, grpc runtime, verifier, rechallenge, CLI smoke,
+  calibration, paper conformance, memory accounting, and host fast-phase
+  adversarial slices
+- parity checks:
+  added a direct GPU parity test that fills a real leased HBM challenge array
+  in place and verifies byte-identical output against the preserved reference
+  challenge-label array
+- hardware checks:
+  real H100 `single-h100-hbm-2mib` remained `SUCCESS` with
+  `declared_stage_copy_bytes=0` and `copy_to_hbm=0`
+
+#### Decision
+
+- accepted for architecture and compliance shape:
+  contiguous GPU-only `blake3-xof` sessions now have a true device-side
+  in-place prover path that writes directly into the leased HBM destination
+  array instead of staging labels in host memory and then copying them to the
+  device
+- not accepted as a speed optimization yet:
+  the first CUDA in-place implementation is substantially slower than the
+  previous CPU-native producer path on the current `2 MiB` benchmark, even
+  though it removes the copy step and dramatically cuts prover scratch
+- architecture rationale:
+  this is still the right structural direction for paper-faithful HBM
+  materialization because it eliminates the separate host-side surrogate label
+  store and uses the destination HBM slots themselves as workspace; the
+  current issue is kernel/schedule efficiency, not model correctness
+- follow-up:
+  optimize the CUDA scheduler and kernels before relying on this path for
+  performance claims; likely targets are kernel launch granularity, temporary
+  device-buffer churn, and reducing repeated host-driven recursion overhead
+
+## Entry 014: CUDA HBM In-Place Synchronization And Plan-Caching Round
+
+- date:
+  2026-03-23
+- git head:
+  `39199965abc417b228298799ec2b0fd5e50dbb69`
+- status:
+  accepted with follow-up
+- hypothesis:
+  the first CUDA in-place path is paying most of its penalty in host-driven
+  synchronization and repeatedly copying the same merged-plan index tables to
+  device memory; removing per-kernel `cudaDeviceSynchronize()` calls and
+  caching per-dimension plan indices on the GPU should recover a large share of
+  the lost runtime without giving up the direct-in-HBM in-place structure.
+
+#### Change Scope
+
+- files:
+  `native/pose_native_label_engine/src/hbm_inplace.cu`
+- profiles benchmarked:
+  `single-h100-hbm-2mib`
+
+#### Commands
+
+```bash
+scripts/build_native_label_engine.sh
+
+PYTHONPATH=src .venv/bin/python -m py_compile \
+  src/pose/graphs/native_engine.py \
+  src/pose/prover/grpc_service.py \
+  tests/parity/test_native_labeling.py
+
+PYTHONPATH=src .venv/bin/python -m pytest tests/parity/test_native_labeling.py -q
+PYTHONPATH=src .venv/bin/python -m pytest tests/unit/test_grpc_pose_db_runtime.py -q
+
+PYTHONPATH=src .venv/bin/python -m pytest \
+  tests/unit/test_verifier_service.py \
+  tests/unit/test_rechallenge.py \
+  tests/integration/test_cli_smoke.py \
+  tests/unit/test_calibration.py \
+  tests/unit/test_paper_conformance.py \
+  tests/adversarial/test_memory_accounting.py \
+  tests/adversarial/test_host_fast_phase_attacks.py -q
+
+PYTHONPATH=src .venv/bin/python -m pose.cli.main bench run --profile /tmp/single-h100-hbm-2mib.yaml
+```
+
+#### Before Artifacts
+
+- first CUDA HBM in-place attempt:
+  `.pose/benchmarks/single-h100-hbm-2mib/20260323T105723Z`
+
+#### After Artifacts
+
+- optimized CUDA HBM in-place artifact:
+  `.pose/benchmarks/single-h100-hbm-2mib/20260323T110723Z`
+
+#### Metric Delta
+
+Comparison for the first optimization round on the real H100:
+`single-h100-hbm-2mib`, `20260323T105723Z -> 20260323T110723Z`
+
+| metric | before | after | delta |
+| --- | ---: | ---: | ---: |
+| total ms | 21,056 | 14,080 | -6,976 (-33.13%) |
+| label_generation ms | 16,370 | 9,829 | -6,541 (-39.96%) |
+| expected_response_prep ms | 3,992 | 3,558 | -434 (-10.87%) |
+| graph_construction ms | 41 | 41 | 0 (+0.00%) |
+| fast_phase ms | 206 | 205 | -1 (-0.49%) |
+| verifier_cpu ms | 4,287 | 3,833 | -454 (-10.59%) |
+| q/gamma | 0.02832 | 0.02783 | -0.00049 (-1.72%) |
+| scratch_peak_bytes | 3,735,764 | 7,340,252 | +3,604,488 (+96.49%) |
+
+For context against the pre-CUDA HBM baseline
+`20260323T100342Z -> 20260323T110723Z`, the optimized CUDA path is still
+slower overall (`10,003 ms -> 14,080 ms`) but preserves the structural gains:
+`copy_to_hbm = 0` instead of `23 ms`, and `scratch_peak_bytes` is still down
+from `82,444,933` to `7,340,252`.
+
+#### Correctness Gates
+
+- tests:
+  rebuild succeeded, `56` focused tests passed across native parity, grpc
+  runtime, verifier, rechallenge, CLI smoke, calibration, paper conformance,
+  memory accounting, and host fast-phase adversarial slices
+- parity checks:
+  the real-GPU parity test for direct HBM in-place fill remained green after
+  the launch/synchronization changes
+- hardware checks:
+  real H100 `single-h100-hbm-2mib` remained `SUCCESS` with
+  `declared_stage_copy_bytes=0`, `copy_to_hbm=0`, and `coverage_fraction=1.0`
+
+#### Decision
+
+- accepted because:
+  this round recovered about a third of the initial CUDA regression while
+  keeping the device-side in-place architecture intact
+- important tradeoff:
+  caching device-side merged plans increases scratch relative to the first CUDA
+  attempt, but the path is still far below the old streaming HBM prover path
+  and still eliminates the host-to-HBM copy step
+- remaining gap:
+  the optimized CUDA path is still slower than the previous CPU-native
+  materializer on the `2 MiB` benchmark, so HBM in-place is now structurally
+  correct and much less scratch-heavy, but not yet the fastest implementation
+- follow-up:
+  the next likely wins are reducing kernel launch count and host recursion
+  overhead, not more synchronization trimming
+
+## Entry 015: Cooperative Fused CUDA Connector And Merge Kernels
+
+- date:
+  2026-03-23
+- git head:
+  `39199965abc417b228298799ec2b0fd5e50dbb69`
+- status:
+  rejected
+- hypothesis:
+  replacing the many small connector and merge kernel launches with
+  cooperative-grid fused kernels should reduce launch overhead and host
+  recursion cost on the single-H100 `2 MiB` profile.
+
+#### Change Scope
+
+- files:
+  `native/pose_native_label_engine/src/hbm_inplace.cu`
+- profiles benchmarked:
+  `single-h100-hbm-2mib`
+
+#### Before Artifacts
+
+- prior accepted CUDA HBM in-place baseline:
+  `.pose/benchmarks/single-h100-hbm-2mib/20260323T110723Z`
+
+#### After Artifacts
+
+- rejected cooperative-fused artifact:
+  `.pose/benchmarks/single-h100-hbm-2mib/20260323T111550Z`
+
+#### Metric Delta
+
+| metric | before | after | delta |
+| --- | ---: | ---: | ---: |
+| total ms | 14,080 | 16,755 | +2,675 (+19.00%) |
+| label_generation ms | 9,829 | 12,249 | +2,420 (+24.62%) |
+| expected_response_prep ms | 3,558 | 3,678 | +120 (+3.37%) |
+| verifier_cpu ms | 3,833 | 3,963 | +130 (+3.39%) |
+| scratch_peak_bytes | 7,340,252 | 7,340,252 | 0 (+0.00%) |
+
+#### Correctness Gates
+
+- tests:
+  parity, grpc runtime, verifier, rechallenge, calibration, CLI smoke, paper
+  conformance, memory accounting, and host fast-phase adversarial slices all
+  stayed green during the experiment
+- hardware checks:
+  the real H100 run still returned `SUCCESS` and preserved
+  `declared_stage_copy_bytes=0` and `copy_to_hbm=0`
+
+#### Decision
+
+- rejected because:
+  the cooperative fused kernels were slower on the real H100 profile despite
+  preserving correctness; the added grid-wide synchronization cost outweighed
+  the launch-count reduction on this workload
+- follow-up:
+  the cooperative path was disabled again and not left active in the runtime
+
+## Entry 016: Fixed-Layout CUDA Payload Prefixes
+
+- date:
+  2026-03-23
+- git head:
+  `39199965abc417b228298799ec2b0fd5e50dbb69`
+- status:
+  rejected
+- hypothesis:
+  mirroring the earlier fixed-layout payload win from the CPU-native engine
+  inside the CUDA kernels should reduce per-label payload construction cost in
+  the direct-in-HBM path.
+
+#### Change Scope
+
+- files:
+  `native/pose_native_label_engine/src/hbm_inplace.cu`
+- profiles benchmarked:
+  `single-h100-hbm-2mib`
+
+#### Before Artifacts
+
+- prior accepted CUDA HBM in-place baseline:
+  `.pose/benchmarks/single-h100-hbm-2mib/20260323T110723Z`
+
+#### After Artifacts
+
+- rejected fixed-layout payload artifact:
+  `.pose/benchmarks/single-h100-hbm-2mib/20260323T111932Z`
+- restored-code validation artifact:
+  `.pose/benchmarks/single-h100-hbm-2mib/20260323T112146Z`
+
+#### Metric Delta
+
+Rejected experiment versus the accepted CUDA HBM baseline:
+
+| metric | before | after | delta |
+| --- | ---: | ---: | ---: |
+| total ms | 14,080 | 15,589 | +1,509 (+10.72%) |
+| label_generation ms | 9,829 | 10,846 | +1,017 (+10.35%) |
+| expected_response_prep ms | 3,558 | 3,985 | +427 (+12.00%) |
+| verifier_cpu ms | 3,833 | 4,292 | +459 (+11.97%) |
+| scratch_peak_bytes | 7,340,252 | 7,341,060 | +808 (+0.01%) |
+
+Post-revert validation for the current workspace:
+
+| metric | restored current |
+| --- | ---: |
+| total ms | 14,973 |
+| label_generation ms | 10,553 |
+| expected_response_prep ms | 3,684 |
+| verifier_cpu ms | 3,969 |
+| scratch_peak_bytes | 7,340,252 |
+
+#### Correctness Gates
+
+- tests:
+  parity, grpc runtime, verifier, rechallenge, calibration, CLI smoke, paper
+  conformance, memory accounting, and host fast-phase adversarial slices all
+  passed before and after the revert
+- hardware checks:
+  both the rejected run and the restored-code run remained `SUCCESS` on the
+  real H100 with `copy_to_hbm=0`
+
+#### Decision
+
+- rejected because:
+  the fixed-layout CUDA payload prefixes did not translate into a runtime win;
+  they made the direct-in-HBM path slower on the target profile
+- current state:
+  the workspace was reverted to the prior non-cooperative CUDA HBM path and
+  revalidated with the `20260323T112146Z` artifact
+
+## Entry 017: CUDA HBM Plan-Compaction Round
+
+- date:
+  2026-03-23
+- git head:
+  `39199965abc417b228298799ec2b0fd5e50dbb69`
+- status:
+  rejected
+- hypothesis:
+  compressing and streamlining the CUDA merged-plan tables should lower
+  `scratch_peak_bytes` and cut enough plan upload / index-lookup overhead to
+  improve the HBM path on the repeated small H100 benchmark.
+
+#### Change Scope
+
+- files:
+  `native/pose_native_label_engine/src/hbm_inplace.cu`
+- profiles benchmarked:
+  temporary `single-h100-hbm-small-r3` workload with `repetition_count: 3`
+
+#### Commands
+
+```bash
+scripts/build_native_label_engine.sh
+
+PYTHONPATH=src .venv/bin/python -m pytest \
+  tests/parity/test_native_labeling.py \
+  tests/unit/test_grpc_pose_db_runtime.py -q
+
+PYTHONPATH=src .venv/bin/python - <<'PY'
+import json
+import tempfile
+from pathlib import Path
+from textwrap import dedent
+from pose.benchmarks.harness import run_benchmark
+from pose.protocol.codec import load_json_file
+
+profile_text = dedent('''
+name: single-h100-hbm-small-r3
+benchmark_class: cold
+target_devices:
+  host: false
+  gpus: [0]
+reserve_policy:
+  host_bytes: 0
+  per_gpu_bytes: 131072
+host_target_fraction: 0.0
+per_gpu_target_fraction: 1.0
+w_bits: 256
+graph_family: pose-db-drg-v1
+hash_backend: blake3-xof
+adversary_model: general
+attacker_budget_bytes_assumed: 65536
+challenge_policy:
+  rounds_r: 64
+  target_success_bound: 1.0e-9
+  sample_with_replacement: true
+deadline_policy:
+  response_deadline_us: 5000
+  session_timeout_ms: 120000
+calibration_policy:
+  lookup_samples: 512
+  hash_measurement_rounds: 3
+  hashes_per_round: 4096
+  transport_overhead_us: 180
+  serialization_overhead_us: 90
+  safety_margin_fraction: 0.25
+cleanup_policy:
+  zeroize: true
+  verify_zeroization: false
+repetition_count: 3
+transport_mode: grpc
+coverage_threshold: 1.0
+prover_sandbox:
+  mode: process_budget_dev
+  process_memory_max_bytes: 17179869184
+  require_no_visible_gpus: false
+  memlock_max_bytes: 0
+  file_size_max_bytes: 0
+''').strip() + '\n'
+
+with tempfile.TemporaryDirectory(prefix='pose-hbm-small-r3-') as temp_dir:
+    profile_path = Path(temp_dir) / 'single-h100-hbm-small-r3.yaml'
+    profile_path.write_text(profile_text, encoding='utf-8')
+    payload = run_benchmark(str(profile_path))
+    summary = load_json_file(Path(payload['archive']['summary_path']))
+    print(json.dumps({'run_directory': payload['archive']['run_directory'], 'summary': summary}, sort_keys=True))
+PY
+```
+
+#### Before Artifacts
+
+- repeated small-HBM baseline:
+  `.pose/benchmarks/single-h100-hbm-small-r3/20260323T113512Z`
+
+#### After Artifacts
+
+- rejected plan-compaction artifact:
+  `.pose/benchmarks/single-h100-hbm-small-r3/20260323T114936Z`
+
+#### Metric Delta
+
+| metric | before | after | delta |
+| --- | ---: | ---: | ---: |
+| total ms | 1,833.00 | 1,820.67 | -12.33 (-0.67%) |
+| label_generation ms | 918.33 | 925.00 | +6.67 (+0.73%) |
+| expected_response_prep ms | 234.00 | 231.67 | -2.33 (-1.00%) |
+| graph_construction ms | 0.67 | 0.67 | 0 (+0.00%) |
+| fast_phase ms | 206.00 | 205.67 | -0.33 (-0.16%) |
+| verifier_cpu ms | 490.33 | 466.00 | -24.33 (-4.96%) |
+| scratch_peak_bytes | 327,900 | 127,184 | -200,716 (-61.21%) |
+
+#### Correctness Gates
+
+- tests:
+  `tests/parity/test_native_labeling.py` and
+  `tests/unit/test_grpc_pose_db_runtime.py` both remained green after the
+  native rebuild
+- parity checks:
+  the direct GPU parity slice continued to pass while the experiment was live
+- hardware checks:
+  the repeated `single-h100-hbm-small-r3` benchmark remained `SUCCESS` on the
+  H100 with `declared_stage_copy_bytes=0`
+
+#### Decision
+
+- rejected because:
+  the HBM-path target metric regressed: `label_generation` got slower even
+  though `scratch_peak_bytes` dropped sharply, so this round did not deliver a
+  defensible speedup for the path being optimized
+- follow-up:
+  keep the scratch reduction evidence, but revert the code and look for a
+  backend-selection or algorithmic win instead of plan-compaction alone
+
+## Entry 018: Small-HBM Native Streaming Selector
+
+- date:
+  2026-03-23
+- git head:
+  `39199965abc417b228298799ec2b0fd5e50dbb69`
+- status:
+  reverted by policy
+- hypothesis:
+  the direct CUDA in-place HBM path has a fixed launch/setup cost that is too
+  high for smoke-scale HBM sessions; routing only very small HBM sessions to
+  the existing native streaming producer should improve runtime while keeping
+  the streaming scratch bounded under a small explicit cap.
+
+#### Change Scope
+
+- files:
+  `src/pose/prover/grpc_service.py`,
+  `tests/unit/test_verifier_service.py`
+- profiles benchmarked:
+  temporary `single-h100-hbm-small-r3` workload with `repetition_count: 3`
+
+#### Commands
+
+```bash
+PYTHONPATH=src .venv/bin/python -m pytest \
+  tests/unit/test_verifier_service.py \
+  tests/unit/test_grpc_pose_db_runtime.py -q
+
+PYTHONPATH=src .venv/bin/python - <<'PY'
+import json
+import tempfile
+from pathlib import Path
+from textwrap import dedent
+from pose.benchmarks.harness import run_benchmark
+from pose.protocol.codec import load_json_file
+
+profile_text = dedent('''
+name: single-h100-hbm-small-r3
+benchmark_class: cold
+target_devices:
+  host: false
+  gpus: [0]
+reserve_policy:
+  host_bytes: 0
+  per_gpu_bytes: 131072
+host_target_fraction: 0.0
+per_gpu_target_fraction: 1.0
+w_bits: 256
+graph_family: pose-db-drg-v1
+hash_backend: blake3-xof
+adversary_model: general
+attacker_budget_bytes_assumed: 65536
+challenge_policy:
+  rounds_r: 64
+  target_success_bound: 1.0e-9
+  sample_with_replacement: true
+deadline_policy:
+  response_deadline_us: 5000
+  session_timeout_ms: 120000
+calibration_policy:
+  lookup_samples: 512
+  hash_measurement_rounds: 3
+  hashes_per_round: 4096
+  transport_overhead_us: 180
+  serialization_overhead_us: 90
+  safety_margin_fraction: 0.25
+cleanup_policy:
+  zeroize: true
+  verify_zeroization: false
+repetition_count: 3
+transport_mode: grpc
+coverage_threshold: 1.0
+prover_sandbox:
+  mode: process_budget_dev
+  process_memory_max_bytes: 17179869184
+  require_no_visible_gpus: false
+  memlock_max_bytes: 0
+  file_size_max_bytes: 0
+''').strip() + '\n'
+
+with tempfile.TemporaryDirectory(prefix='pose-hbm-small-r3-stream-threshold-') as temp_dir:
+    profile_path = Path(temp_dir) / 'single-h100-hbm-small-r3.yaml'
+    profile_path.write_text(profile_text, encoding='utf-8')
+    payload = run_benchmark(str(profile_path))
+    summary = load_json_file(Path(payload['archive']['summary_path']))
+    print(json.dumps({'run_directory': payload['archive']['run_directory'], 'summary': summary}, sort_keys=True))
+PY
+```
+
+#### Before Artifacts
+
+- repeated small-HBM baseline:
+  `.pose/benchmarks/single-h100-hbm-small-r3/20260323T113512Z`
+
+#### After Artifacts
+
+- accepted small-HBM selector artifact:
+  `.pose/benchmarks/single-h100-hbm-small-r3/20260323T115812Z`
+
+#### Metric Delta
+
+| metric | before | after | delta |
+| --- | ---: | ---: | ---: |
+| total ms | 1,833.00 | 1,525.67 | -307.33 (-16.77%) |
+| label_generation ms | 918.33 | 686.33 | -232.00 (-25.26%) |
+| expected_response_prep ms | 234.00 | 231.33 | -2.67 (-1.14%) |
+| graph_construction ms | 0.67 | 0.67 | 0 (+0.00%) |
+| fast_phase ms | 206.00 | 205.67 | -0.33 (-0.16%) |
+| verifier_cpu ms | 490.33 | 462.00 | -28.33 (-5.78%) |
+| scratch_peak_bytes | 327,900 | 2,941,573 | +2,613,673 (+796.49%) |
+
+#### Correctness Gates
+
+- tests:
+  `tests/unit/test_verifier_service.py` and
+  `tests/unit/test_grpc_pose_db_runtime.py` both passed with the selector in
+  place
+- parity checks:
+  no label-generation algorithm changed; the selector only chooses between two
+  already-parity-covered native backends
+- hardware checks:
+  the repeated `single-h100-hbm-small-r3` benchmark remained `SUCCESS` on the
+  H100 with `declared_stage_copy_bytes=0`
+
+#### Decision
+
+- benchmark result:
+  on the benchmarked small HBM workload, this selector delivered a real
+  end-to-end speedup and a clear `label_generation` win by routing only
+  smoke-scale HBM sessions to the faster native streaming producer
+- reason reverted:
+  this was a smoke-scale-only backend-selection optimization, and smoke-scale
+  wins are now explicitly treated as diagnostic rather than sufficient for
+  accepted runtime policy; the selector was therefore removed from the default
+  HBM path even though the smoke benchmark itself was positive
+- important tradeoff observed while the experiment was live:
+  `scratch_peak_bytes` rose from about `0.31 MiB` to about `2.81 MiB`, which
+  further reinforced that this was not the right general HBM direction
+- follow-up:
+  keep working on larger-session HBM optimizations that improve the direct CUDA
+  in-place backend or otherwise translate to representative non-smoke HBM
+  profiles
+
+## Entry 019: Revert Smoke-Scale HBM Selector And Codify Benchmark Policy
+
+- date:
+  2026-03-23
+- git head:
+  `39199965abc417b228298799ec2b0fd5e50dbb69`
+- status:
+  accepted
+- hypothesis:
+  removing the smoke-scale-only HBM selector and codifying benchmark-acceptance
+  policy in the spec and optimization log should keep the runtime focused on
+  optimizations that matter for representative larger HBM sessions.
+
+#### Change Scope
+
+- files:
+  `src/pose/prover/grpc_service.py`,
+  `tests/unit/test_verifier_service.py`,
+  `docs/repository-spec.md`,
+  `docs/performance/optimization-log.md`
+- profiles benchmarked:
+  none; this round is a policy/documentation revert that restores the
+  pre-Entry-018 HBM runtime selection behavior
+
+#### Commands
+
+```bash
+PYTHONPATH=src .venv/bin/python -m pytest \
+  tests/unit/test_verifier_service.py \
+  tests/unit/test_grpc_pose_db_runtime.py -q
+
+PYTHONPATH=src .venv/bin/python -m py_compile \
+  src/pose/prover/grpc_service.py \
+  tests/unit/test_verifier_service.py
+```
+
+#### Restored Runtime Reference
+
+- restored HBM selector-free baseline:
+  `.pose/benchmarks/single-h100-hbm-small-r3/20260323T113512Z`
+
+#### Correctness Gates
+
+- tests:
+  `tests/unit/test_verifier_service.py` and
+  `tests/unit/test_grpc_pose_db_runtime.py` both passed after removing the
+  selector-specific logic and tests
+- compile checks:
+  `py_compile` passed for `src/pose/prover/grpc_service.py` and
+  `tests/unit/test_verifier_service.py`
+- validation scope:
+  this round validates the code revert and documentation change; it does not
+  claim a new performance result because the removed optimization was
+  intentionally smoke-scale-specific
+
+#### Decision
+
+- accepted because:
+  the runtime is back to the larger-session-oriented HBM backend policy, and
+  both the repository spec and optimization log now state explicitly that
+  smoke-scale profiles are diagnostic only
+- policy statement:
+  smoke-scale PoSE exists to help discover optimizations that later improve
+  representative larger sessions; it is not itself a target for accepted
+  runtime specialization
 
 ## Template For Future Entries
 

@@ -4,7 +4,7 @@ import tomllib
 from pathlib import Path
 
 from pose.common.errors import UnsupportedPhaseError
-from pose.graphs import build_pose_db_graph, compute_challenge_labels
+from pose.graphs import build_pose_db_graph, compute_challenge_labels, preferred_runtime_label_engine
 from pose.prover.grpc_service import serve_unix
 
 
@@ -29,6 +29,7 @@ class ProverService:
             graph,
             session_seed="11" * 32,
             challenge_indices=[0, 1],
+            label_engine=preferred_runtime_label_engine(),
         )
         return {
             "status": "ok",

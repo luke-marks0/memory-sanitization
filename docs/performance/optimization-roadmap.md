@@ -346,6 +346,27 @@ Validation requirements:
 - benchmark evidence on all smoke profiles before enabling by default;
 - fallback to the Python path on any mismatch or unsupported host.
 
+Current status:
+
+- partially completed and accepted;
+- the repo now has an optional Rust + PyO3 native label engine plus a repo
+  build helper at `scripts/build_native_label_engine.sh`;
+- when the extension is installed, runtime paths prefer the native engine for
+  prover materialization and verifier expected-response preparation, while the
+  preserved Python implementation remains the normative fallback and parity
+  oracle;
+- on the accepted real-H100 `single-h100-hbm-2mib` comparison, the native path
+  reduced `total` by about `90.2%`, `label_generation` by about `92.0%`, and
+  `expected_response_prep` by about `88.8%`, while keeping
+  `declared_stage_copy_bytes=0` through a stage-free prover callback design.
+
+Next step:
+
+- continue reducing native scratch shape, which is now dominated by compact but
+  still large per-node bookkeeping on large graphs;
+- improve the packaging/discovery path so native builds are easier to enable in
+  reproducible environments without relying on local shell state.
+
 ### P3: Remove Python Object Churn in Prover Materialization
 
 The current materializer allocates many Python objects per node:
@@ -376,6 +397,19 @@ Expected value:
 - high on prover `label_generation`;
 - possibly meaningful scratch reduction too.
 
+Current status:
+
+- partially completed and accepted;
+- compact successor bookkeeping now uses dense `bytearray` counts, removed the
+  per-entry scratch-size tracking map, and switched challenge writes to a
+  sequential challenge-set cursor in prover materialization;
+- on the accepted real-H100 `single-h100-hbm-2mib` comparison, that reduced
+  prover `label_generation` by about `4.8%` and cut `scratch_peak_bytes` by
+  about `59%` without changing label bytes or cleanup semantics.
+- the native engine now supersedes much of this Python hot-path work when the
+  extension is available, but the pure-Python path still matters as the
+  reference fallback and for environments without the Rust build.
+
 Validation requirements:
 
 - exact label parity against the current materializer;
@@ -398,6 +432,20 @@ Safe optimization direction:
 - prefer shared backend logic for prover and verifier so parity work is not
   duplicated.
 
+Current status:
+
+- partially completed;
+- a verifier streaming challenge-label path now exists and is parity-tested,
+  but benchmarking showed it was slower on the current smoke and `2 MiB`
+  profiles when enabled by default;
+- the accepted implementation therefore gates streaming behind a large-profile
+  threshold and uses it only when the full verifier label buffer would exceed
+  `1 GiB`, where memory feasibility matters more than current small-profile
+  latency.
+- separately, the native Rust verifier path is now accepted when available and
+  cuts `expected_response_prep` by about `88.8%` on the real-H100 `2 MiB`
+  profile without changing expected bytes or challenge semantics.
+
 Expected value:
 
 - high;
@@ -405,6 +453,13 @@ Expected value:
 - still high at larger scale:
   `label_generation + expected_response_prep` is about `57%` of total at
   `2 MiB`.
+
+Next step:
+
+- either reduce the Python overhead inside the streaming fallback path itself,
+  or continue tightening the native verifier/prover memory footprint so the
+  native path remains attractive at larger scales as well as on today’s smoke
+  and medium profiles.
 
 ### P5: Make Rechallenge the Preferred Fast-Iteration Benchmark
 

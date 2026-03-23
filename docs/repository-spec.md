@@ -847,6 +847,9 @@ The prover’s generation strategy must be faithful to the paper’s in-place pr
 
 - aside from the destination label slots and bounded scratch buffers,
   it must not require a second `O(m)`-sized auxiliary label store.
+- the destination challenge-slot workspace itself may be reused during
+  initialization, but that does not authorize a separate `O(m)` surrogate
+  label array in another tier.
 
 ### 14.2 What counts as extra state
 
@@ -891,6 +894,14 @@ Production profiles must not hide surviving stage copies.
 If a profile claims HBM coverage, the canonical covered slots for that part of the session must be HBM-resident leased slots.
 
 Host shadows used during initialization must follow the staging rules above.
+
+In particular:
+
+- a host-resident `O(m)` auxiliary label array used as the primary generation
+  workspace for an HBM-covered session is a stage copy, not a faithful
+  in-place HBM realization;
+- such a path must either be eliminated or counted explicitly under the
+  staging/accounting rules and claim notes.
 
 ---
 
@@ -1572,6 +1583,19 @@ The repository must include these named profiles:
 - `single-h100-hybrid-max`
 - `eight-h100-hbm-max`
 - `eight-h100-hybrid-max`
+
+Optional development or smoke profiles may also exist for bring-up and rapid
+sanity checks.
+
+Those optional smoke-scale profiles are diagnostic only:
+
+- they may reveal regressions, correctness failures, or rough trend direction;
+- they must not by themselves justify accepted backend-selection logic or
+  production-path optimization decisions;
+- an optimization that is specific to smoke-scale sessions, or wins only on
+  smoke-scale sessions, must be rejected or kept out of the default runtime
+  path until it also improves representative larger-scale sessions for the
+  same memory tier.
 
 ### 21.3 Benchmark profile fields
 

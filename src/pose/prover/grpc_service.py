@@ -1,7 +1,5 @@
 from __future__ import annotations
-
 from concurrent import futures
-from array import array
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,9 +9,20 @@ from time import perf_counter
 import grpc
 
 from pose.common.errors import ProtocolError, ResourceFailure
-from pose.common.gpu_lease import GpuLeaseAttachment, attach_gpu_lease
+from pose.common.gpu_lease import CudaRuntime, GpuLeaseAttachment, attach_gpu_lease
 from pose.common.host_lease import HostLeaseAttachment, attach_host_lease
 from pose.graphs import PoseDbGraph, build_graph_descriptor, build_pose_db_graph
+from pose.graphs.labeling import (
+    _build_successor_counts,
+    _challenge_nodes_are_strictly_increasing,
+    preferred_runtime_label_engine,
+)
+from pose.graphs.native_engine import (
+    fill_native_gpu_challenge_labels_in_place,
+    fill_native_host_challenge_labels_in_place,
+    native_cuda_hbm_in_place_available,
+    stream_native_materialization,
+)
 from pose.hashing import LabelOracleContext
 from pose.protocol.grpc_codec import GRPC_PROTOCOL_VERSION, lease_record_from_proto, session_plan_from_proto
 from pose.protocol.messages import LeaseRecord, SessionPlan
@@ -180,7 +189,7 @@ class PoseSessionServicer(session_pb2_grpc.PoseSessionServiceServicer):
     def _estimated_static_scratch_bytes(
         self,
         *,
-        successor_counts: array,
+        successor_counts: bytearray,
         challenge_index_by_node: dict[int, int],
     ) -> int:
         total = getsizeof(successor_counts)
@@ -287,27 +296,10 @@ class PoseSessionServicer(session_pb2_grpc.PoseSessionServiceServicer):
             regions: list[session_pb2.RegionMaterialization] = []
             label_width_bytes = state.plan.label_width_bits // 8
             session_seed = bytes.fromhex(state.plan.session_seed_hex)
-            challenge_index_by_node = {
-                node: challenge_index
-                for challenge_index, node in enumerate(state.graph.challenge_set)
-            }
-            successor_counts = array("I", [0]) * state.graph.node_count
-
-            def count_successors(predecessor_count: int, predecessor0: int, predecessor1: int) -> None:
-                if predecessor_count >= 1:
-                    successor_counts[predecessor0] += 1
-                if predecessor_count == 2:
-                    successor_counts[predecessor1] += 1
-
-            state.graph.visit_predecessor_specs(count_successors)
-            static_scratch_bytes = self._estimated_static_scratch_bytes(
-                successor_counts=successor_counts,
-                challenge_index_by_node=challenge_index_by_node,
-            )
-            region_type_by_id = {
-                region.region_id: region.region_type
-                for region in state.plan.regions
-            }
+            runtime_label_engine = preferred_runtime_label_engine()
+            if not _challenge_nodes_are_strictly_increasing(state.graph):
+                raise ProtocolError("Challenge-set ordering must be strictly increasing in node order.")
+            challenge_write_regions: list[tuple[HostLeaseAttachment | GpuLeaseAttachment, bool, int]] = []
             for region in state.plan.regions:
                 lease = state.leases.get(region.region_id)
                 if lease is None:
@@ -324,114 +316,213 @@ class PoseSessionServicer(session_pb2_grpc.PoseSessionServiceServicer):
                         declared_stage_copy_bytes=0,
                     )
                 )
-            scratch_labels: dict[int, bytearray] = {}
-            scratch_entry_bytes_total = 0
-            scratch_entry_bytes_by_node: dict[int, int] = {}
-            label_oracle = LabelOracleContext.create(
-                session_seed=session_seed,
-                graph_descriptor_digest=state.graph.graph_descriptor_digest,
-                hash_backend=state.plan.hash_backend,
-                output_bytes=label_width_bytes,
-                max_predecessor_count=state.graph.max_predecessor_count,
-            )
-            node_index = 0
-
-            def load_predecessor_label(predecessor: int) -> bytes | bytearray | memoryview:
-                scratch_label = scratch_labels.get(predecessor)
-                if scratch_label is not None:
-                    return scratch_label
-                challenge_index = challenge_index_by_node.get(predecessor, -1)
-                if challenge_index < 0:
-                    raise ProtocolError(
-                        f"Transient predecessor label for node {predecessor} was not retained during materialization."
+                challenge_write_regions.append(
+                    (
+                        attachment,
+                        region.region_type == "host",
+                        region.slot_count,
                     )
-                region_id, local_slot_index = self._resolve_slot(state, challenge_index)
-                return state.attachments[region_id].read(
-                    length=label_width_bytes,
-                    offset=local_slot_index * label_width_bytes,
                 )
-
-            def maybe_cleanup_predecessor(predecessor: int) -> None:
-                nonlocal stage_buffer_cleanup_ms, scratch_entry_bytes_total
-                successor_counts[predecessor] -= 1
-                if successor_counts[predecessor] != 0:
-                    return
-                scratch_label = scratch_labels.pop(predecessor, None)
-                if scratch_label is None:
-                    return
-                scratch_entry_bytes_total -= scratch_entry_bytes_by_node.pop(predecessor, 0)
-                cleanup_started = perf_counter()
-                scratch_label[:] = b"\x00" * len(scratch_label)
-                stage_buffer_cleanup_ms += int((perf_counter() - cleanup_started) * 1000)
-
-            def materialize_node(predecessor_count: int, predecessor0: int, predecessor1: int) -> None:
-                nonlocal node_index, copy_to_host_ms, copy_to_hbm_ms, stage_buffer_cleanup_ms
-                nonlocal scratch_peak_bytes, scratch_entry_bytes_total
-                if predecessor_count == 0:
-                    predecessor_storage_bytes = 0
-                    label_bytes = label_oracle.source_label(
-                        node_index=node_index,
+            region_cursor = 0
+            local_slot_index = 0
+            if runtime_label_engine == "native":
+                if (
+                    len(challenge_write_regions) == 1
+                    and challenge_write_regions[0][1]
+                    and challenge_write_regions[0][2] == state.graph.label_count_m
+                    and isinstance(challenge_write_regions[0][0], HostLeaseAttachment)
+                ):
+                    host_attachment = challenge_write_regions[0][0]
+                    native_metrics = fill_native_host_challenge_labels_in_place(
+                        state.graph,
+                        session_seed=session_seed,
+                        target=host_attachment.mapping,
                     )
-                elif predecessor_count == 1:
-                    predecessor_label0 = load_predecessor_label(predecessor0)
-                    predecessor_storage_bytes = getsizeof(predecessor_label0)
-                    label_bytes = label_oracle.internal_label_1(
-                        node_index=node_index,
-                        predecessor0=predecessor_label0,
+                    scratch_peak_bytes = max(scratch_peak_bytes, native_metrics.scratch_peak_bytes)
+                elif (
+                    len(challenge_write_regions) == 1
+                    and not challenge_write_regions[0][1]
+                    and challenge_write_regions[0][2] == state.graph.label_count_m
+                    and isinstance(challenge_write_regions[0][0], GpuLeaseAttachment)
+                    and isinstance(challenge_write_regions[0][0].runtime, CudaRuntime)
+                    and state.plan.hash_backend == "blake3-xof"
+                    and native_cuda_hbm_in_place_available()
+                ):
+                    gpu_attachment = challenge_write_regions[0][0]
+                    native_metrics = fill_native_gpu_challenge_labels_in_place(
+                        state.graph,
+                        session_seed=session_seed,
+                        device=gpu_attachment.device,
+                        target_pointer=gpu_attachment.pointer,
+                        target_len=state.graph.label_count_m * label_width_bytes,
                     )
+                    scratch_peak_bytes = max(scratch_peak_bytes, native_metrics.scratch_peak_bytes)
                 else:
-                    predecessor_label0 = load_predecessor_label(predecessor0)
-                    predecessor_label1 = load_predecessor_label(predecessor1)
-                    predecessor_storage_bytes = (
-                        getsizeof(predecessor_label0)
-                        + getsizeof(predecessor_label1)
-                    )
-                    label_bytes = label_oracle.internal_label_2(
-                        node_index=node_index,
-                        predecessor0=predecessor_label0,
-                        predecessor1=predecessor_label1,
-                    )
-                scratch_peak_bytes = max(
-                    scratch_peak_bytes,
-                    static_scratch_bytes
-                    + getsizeof(scratch_labels)
-                    + scratch_entry_bytes_total
-                    + predecessor_storage_bytes,
-                )
+                    challenge_write_count = 0
 
-                challenge_index = challenge_index_by_node.get(node_index, -1)
-                if challenge_index >= 0:
+                    def write_challenge_label(label_bytes: bytes) -> None:
+                        nonlocal copy_to_host_ms, copy_to_hbm_ms, region_cursor, local_slot_index, challenge_write_count
+                        if region_cursor >= len(challenge_write_regions):
+                            raise ProtocolError("Challenge-slot cursor exceeded the planned regions during materialization.")
+                        attachment, is_host_region, slot_count = challenge_write_regions[region_cursor]
+                        copy_started = perf_counter()
+                        attachment.write_at(
+                            label_bytes,
+                            offset=local_slot_index * label_width_bytes,
+                        )
+                        copy_elapsed_ms = int((perf_counter() - copy_started) * 1000)
+                        if is_host_region:
+                            copy_to_host_ms += copy_elapsed_ms
+                        else:
+                            copy_to_hbm_ms += copy_elapsed_ms
+                        challenge_write_count += 1
+                        local_slot_index += 1
+                        if local_slot_index >= slot_count:
+                            region_cursor += 1
+                            local_slot_index = 0
+
+                    native_metrics = stream_native_materialization(
+                        state.graph,
+                        session_seed=session_seed,
+                        writer=write_challenge_label,
+                    )
+                    scratch_peak_bytes = max(scratch_peak_bytes, native_metrics.scratch_peak_bytes)
+                    if challenge_write_count != state.graph.label_count_m:
+                        raise ProtocolError(
+                            "Native materialization did not emit the planned number of challenge labels: "
+                            f"{challenge_write_count} != {state.graph.label_count_m}"
+                        )
+            else:
+                challenge_index_by_node = {
+                    node: challenge_index
+                    for challenge_index, node in enumerate(state.graph.challenge_set)
+                }
+                successor_counts = _build_successor_counts(state.graph)
+                static_scratch_bytes = self._estimated_static_scratch_bytes(
+                    successor_counts=successor_counts,
+                    challenge_index_by_node=challenge_index_by_node,
+                )
+                scratch_labels: dict[int, bytearray] = {}
+                scratch_entry_bytes_total = 0
+                scratch_entry_bytes = getsizeof(0) + getsizeof(bytearray(label_width_bytes))
+                label_oracle = LabelOracleContext.create(
+                    session_seed=session_seed,
+                    graph_descriptor_digest=state.graph.graph_descriptor_digest,
+                    hash_backend=state.plan.hash_backend,
+                    output_bytes=label_width_bytes,
+                    max_predecessor_count=state.graph.max_predecessor_count,
+                )
+                node_index = 0
+                challenge_cursor = 0
+                next_challenge_node = state.graph.challenge_set[0] if state.graph.challenge_set else -1
+
+                def load_predecessor_label(predecessor: int) -> bytes | bytearray | memoryview:
+                    scratch_label = scratch_labels.get(predecessor)
+                    if scratch_label is not None:
+                        return scratch_label
+                    challenge_index = challenge_index_by_node.get(predecessor, -1)
+                    if challenge_index < 0:
+                        raise ProtocolError(
+                            f"Transient predecessor label for node {predecessor} was not retained during materialization."
+                        )
                     region_id, local_slot_index = self._resolve_slot(state, challenge_index)
-                    copy_started = perf_counter()
-                    state.attachments[region_id].write_at(
-                        label_bytes,
+                    return state.attachments[region_id].read(
+                        length=label_width_bytes,
                         offset=local_slot_index * label_width_bytes,
                     )
-                    copy_elapsed_ms = int((perf_counter() - copy_started) * 1000)
-                    if region_type_by_id[region_id] == "host":
-                        copy_to_host_ms += copy_elapsed_ms
+
+                def maybe_cleanup_predecessor(predecessor: int) -> None:
+                    nonlocal stage_buffer_cleanup_ms, scratch_entry_bytes_total
+                    count = successor_counts[predecessor] - 1
+                    successor_counts[predecessor] = count
+                    if count != 0:
+                        return
+                    scratch_label = scratch_labels.pop(predecessor, None)
+                    if scratch_label is None:
+                        return
+                    scratch_entry_bytes_total -= scratch_entry_bytes
+                    cleanup_started = perf_counter()
+                    scratch_label[:] = b"\x00" * len(scratch_label)
+                    stage_buffer_cleanup_ms += int((perf_counter() - cleanup_started) * 1000)
+
+                def materialize_node(predecessor_count: int, predecessor0: int, predecessor1: int) -> None:
+                    nonlocal node_index, copy_to_host_ms, copy_to_hbm_ms, stage_buffer_cleanup_ms
+                    nonlocal scratch_peak_bytes, scratch_entry_bytes_total
+                    nonlocal challenge_cursor, next_challenge_node, region_cursor, local_slot_index
+                    if predecessor_count == 0:
+                        predecessor_storage_bytes = 0
+                        label_bytes = label_oracle.source_label(
+                            node_index=node_index,
+                        )
+                    elif predecessor_count == 1:
+                        predecessor_label0 = load_predecessor_label(predecessor0)
+                        predecessor_storage_bytes = getsizeof(predecessor_label0)
+                        label_bytes = label_oracle.internal_label_1(
+                            node_index=node_index,
+                            predecessor0=predecessor_label0,
+                        )
                     else:
-                        copy_to_hbm_ms += copy_elapsed_ms
-                elif successor_counts[node_index] > 0:
-                    scratch_labels[node_index] = bytearray(label_bytes)
-                    entry_bytes = getsizeof(node_index) + getsizeof(scratch_labels[node_index])
-                    scratch_entry_bytes_by_node[node_index] = entry_bytes
-                    scratch_entry_bytes_total += entry_bytes
+                        predecessor_label0 = load_predecessor_label(predecessor0)
+                        predecessor_label1 = load_predecessor_label(predecessor1)
+                        predecessor_storage_bytes = (
+                            getsizeof(predecessor_label0)
+                            + getsizeof(predecessor_label1)
+                        )
+                        label_bytes = label_oracle.internal_label_2(
+                            node_index=node_index,
+                            predecessor0=predecessor_label0,
+                            predecessor1=predecessor_label1,
+                        )
                     scratch_peak_bytes = max(
                         scratch_peak_bytes,
                         static_scratch_bytes
                         + getsizeof(scratch_labels)
                         + scratch_entry_bytes_total
-                        + getsizeof(label_bytes),
+                        + predecessor_storage_bytes,
                     )
 
-                if predecessor_count >= 1:
-                    maybe_cleanup_predecessor(predecessor0)
-                if predecessor_count == 2:
-                    maybe_cleanup_predecessor(predecessor1)
-                node_index += 1
+                    if challenge_cursor < state.graph.label_count_m and node_index == next_challenge_node:
+                        if region_cursor >= len(challenge_write_regions):
+                            raise ProtocolError("Challenge-slot cursor exceeded the planned regions during materialization.")
+                        attachment, is_host_region, slot_count = challenge_write_regions[region_cursor]
+                        copy_started = perf_counter()
+                        attachment.write_at(
+                            label_bytes,
+                            offset=local_slot_index * label_width_bytes,
+                        )
+                        copy_elapsed_ms = int((perf_counter() - copy_started) * 1000)
+                        if is_host_region:
+                            copy_to_host_ms += copy_elapsed_ms
+                        else:
+                            copy_to_hbm_ms += copy_elapsed_ms
+                        challenge_cursor += 1
+                        local_slot_index += 1
+                        if local_slot_index >= slot_count:
+                            region_cursor += 1
+                            local_slot_index = 0
+                        next_challenge_node = (
+                            state.graph.challenge_set[challenge_cursor]
+                            if challenge_cursor < state.graph.label_count_m
+                            else -1
+                        )
+                    elif successor_counts[node_index] > 0:
+                        scratch_labels[node_index] = bytearray(label_bytes)
+                        scratch_entry_bytes_total += scratch_entry_bytes
+                        scratch_peak_bytes = max(
+                            scratch_peak_bytes,
+                            static_scratch_bytes
+                            + getsizeof(scratch_labels)
+                            + scratch_entry_bytes_total
+                            + getsizeof(label_bytes),
+                        )
 
-            state.graph.visit_predecessor_specs(materialize_node)
+                    if predecessor_count >= 1:
+                        maybe_cleanup_predecessor(predecessor0)
+                    if predecessor_count == 2:
+                        maybe_cleanup_predecessor(predecessor1)
+                    node_index += 1
+
+                state.graph.visit_predecessor_specs(materialize_node)
             label_generation_ms = int((perf_counter() - label_generation_started) * 1000)
             state.materialized = True
         except Exception as error:  # pragma: no cover - grpc abort

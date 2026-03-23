@@ -8,7 +8,7 @@ from time import perf_counter
 
 from pose.common.errors import ProtocolError, ResourceFailure
 from pose.common.hashing import sha256_hex
-from pose.graphs import build_pose_db_graph, compute_challenge_labels
+from pose.graphs import build_pose_db_graph, compute_challenge_labels, preferred_runtime_label_engine
 from pose.protocol.result_schema import SessionResult, bootstrap_result
 from pose.verifier.challenges import sample_challenge_indices
 from pose.verifier.grpc_client import FastPhaseClient, cleanup_session, discover, finalize_session
@@ -180,6 +180,7 @@ def run_host_rechallenge(
             graph,
             session_seed=record.session_seed_hex,
             challenge_indices=challenge_indices,
+            label_engine=preferred_runtime_label_engine(),
         )
         result.timings_ms["expected_response_prep"] = int((perf_counter() - expected_started) * 1000)
 
