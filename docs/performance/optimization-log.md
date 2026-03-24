@@ -3827,6 +3827,280 @@ callgrind_annotate --inclusive=yes --tree=both --auto=yes \
   if a wall-clock profiler outside valgrind confirms per-layer worker startup
   is materially visible
 
+## Entry 034: Main-Branch BLAKE3 Prefix Fusion And Wall-Clock Sampling
+
+- date: `2026-03-24`
+- git head: `6ddeb54b4e728673246e1608e08e3648b42aeca9`
+- status: accepted
+- hypothesis:
+  after merging the earlier host-path work back to `main`, fusing the tiny
+  static BLAKE3 prefix fragments in `internal_label_1_into(...)` and
+  `internal_label_2_into(...)` should reduce `Hasher::update(...)` overhead
+  without growing host scratch, and a wall-clock profiler should then confirm
+  whether per-layer thread startup is still materially visible.
+
+#### Change Scope
+
+- files:
+  `native/pose_native_label_engine/src/lib.rs`
+- profiles benchmarked:
+  direct host-native microbenchmark for
+  `fill_native_host_challenge_labels_in_place(...)` with
+  `m=65536`, `n=15`, `hash_backend=blake3-xof`, `label_width_bits=256`, plus a
+  raw `py-spy` wall-clock sample on the retained variant
+
+#### Commands
+
+```bash
+source "$HOME/.cargo/env" && scripts/build_native_label_engine.sh
+
+# before and after:
+# run the same inline host-native microbenchmark with:
+#   label_count_m = 65536
+#   graph_parameter_n = 15
+#   hash_backend = "blake3-xof"
+#   label_width_bits = 256
+#   repetitions = 5
+#   one warmup fill before timing
+# and archive the JSON payload under:
+#   .pose/benchmarks/host-native-microbench/<timestamp>-<label>.json
+
+uv tool install py-spy
+env PYTHONPATH=src /root/.local/bin/py-spy record \
+  --native \
+  --threads \
+  --rate 200 \
+  --format raw \
+  -o .pose/profiles/host-native-pyspy.raw \
+  -- .venv/bin/python -c "<same graph, one warmup fill, then five timed fills>"
+
+source "$HOME/.cargo/env" && (cd native/pose_native_label_engine && cargo test -q)
+
+PYTHONPATH=src .venv/bin/python -m pytest \
+  tests/parity/test_native_labeling.py \
+  tests/parity/test_accelerated_labeling.py \
+  tests/unit/test_grpc_pose_db_runtime.py -q
+```
+
+#### Before Artifacts
+
+- `.pose/benchmarks/host-native-microbench/20260324T053137Z-main-blake3-overhead-baseline.json`
+
+#### After Artifacts
+
+- `.pose/benchmarks/host-native-microbench/20260324T053805Z-candidate-blake3-internal2-prefix-fusion.json`
+- `.pose/profiles/host-native-pyspy.raw`
+
+#### Rejected Candidate Artifacts
+
+- `.pose/benchmarks/host-native-microbench/20260324T053410Z-candidate-blake3-fused-tail.json`
+- `.pose/benchmarks/host-native-microbench/20260324T053548Z-post-fused-tail-revert.json`
+
+#### Metric Delta
+
+| metric | before | after | delta |
+| --- | ---: | ---: | ---: |
+| `host_in_place` mean ms | 3,552.96 | 3,393.61 | -159.35 (-4.49%) |
+| `host_in_place` median ms | 3,554.13 | 3,389.05 | -165.08 (-4.64%) |
+| `scratch_peak_bytes` | 687 | 687 | 0 (+0.00%) |
+
+#### Observed Evidence
+
+- rejected fused-tail compaction:
+  `.pose/benchmarks/host-native-microbench/20260324T053410Z-candidate-blake3-fused-tail.json`
+  landed at `3,681.21` ms mean, which was `+128.25` ms (`+3.61%`) slower than
+  the fresh `main` baseline, so it was reverted immediately
+- retained `internal_label_1` prefix fusion:
+  `.pose/benchmarks/host-native-microbench/20260324T053653Z-candidate-blake3-internal1-prefix-fusion.json`
+  landed at `3,545.03` ms mean, a small but positive `-7.93` ms (`-0.22%`)
+  improvement vs the fresh `main` baseline
+- retained `internal_label_2` prefix fusion:
+  `.pose/benchmarks/host-native-microbench/20260324T053805Z-candidate-blake3-internal2-prefix-fusion.json`
+  landed at `3,393.61` ms mean, `-151.42` ms (`-4.27%`) faster than the
+  retained `internal_label_1` step and `-159.35` ms (`-4.49%`) faster than the
+  fresh `main` baseline
+- wall-clock sample:
+  in `.pose/profiles/host-native-pyspy.raw`, sampled stacks containing
+  `std::thread::lifecycle::spawn_unchecked(...)` accounted for `271 / 3,868`
+  samples (`7.01%`), `pthread_create` accounted for `264 / 3,868` (`6.83%`),
+  `clone` accounted for `220 / 3,868` (`5.69%`), and `JoinInner::join(...)`
+  accounted for `211 / 3,868` (`5.46%`); for comparison,
+  `blake3::Hasher::update(...)` appeared in `160 / 3,868` samples (`4.14%`)
+
+#### Correctness Gates
+
+- tests:
+  `cargo test -q` in `native/pose_native_label_engine` passed on the retained
+  prefix-fusion state
+- parity and runtime checks:
+  `16` focused Python tests passed across native parity, accelerated parity,
+  and grpc runtime slices on the retained state
+- semantic scope:
+  the retained code only changes how tiny static BLAKE3 prefix fragments are
+  grouped before `update(...)`; domains, output bytes, graph order, and host
+  scratch accounting stayed unchanged
+
+#### Decision
+
+- accepted because:
+  the retained prefix-fusion helpers improved the direct host-native benchmark
+  on `main` by about `4.5%` while preserving the `687`-byte scratch footprint
+- rejected sub-step:
+  the more aggressive fused-tail helper reduced call count further on paper, but
+  it benchmarked slower and did not survive the keep-if-faster gate
+- profiler conclusion:
+  wall-clock sampling now shows thread startup and join work materially in the
+  current host path, so a persistent worker-pool or thread-reuse experiment is
+  justified next
+- follow-up:
+  the next host-only round should focus on reusing workers for the parallel
+  BLAKE3 layers rather than adding more scratch-heavy scheduler metadata
+
+## Entry 035: Host Worker Pool Reuse And Threshold Retune
+
+- date: `2026-03-24`
+- git head: `6ddeb54b4e728673246e1608e08e3648b42aeca9`
+- status: accepted
+- hypothesis:
+  the remaining host-path wall time still included per-layer worker startup and
+  join overhead, so replacing `thread::scope(...)` spawns with a persistent
+  worker pool should reduce scheduler overhead; once startup is amortized, the
+  old parallel-width threshold should be retuned under the cheaper pool-backed
+  path.
+
+#### Change Scope
+
+- files:
+  `native/pose_native_label_engine/Cargo.toml`,
+  `native/pose_native_label_engine/Cargo.lock`,
+  `native/pose_native_label_engine/src/lib.rs`
+- profiles benchmarked:
+  direct host-native microbenchmark for
+  `fill_native_host_challenge_labels_in_place(...)` with
+  `m=65536`, `n=15`, `hash_backend=blake3-xof`, `label_width_bits=256`, plus
+  raw `py-spy` wall-clock samples before and after the retained worker-pool
+  state
+
+#### Commands
+
+```bash
+source "$HOME/.cargo/env" && scripts/build_native_label_engine.sh
+
+# before and after:
+# run the same inline host-native microbenchmark with:
+#   label_count_m = 65536
+#   graph_parameter_n = 15
+#   hash_backend = "blake3-xof"
+#   label_width_bits = 256
+#   repetitions = 5
+#   one warmup fill before timing
+# and archive the JSON payload under:
+#   .pose/benchmarks/host-native-microbench/<timestamp>-<label>.json
+
+env PYTHONPATH=src /root/.local/bin/py-spy record \
+  --native \
+  --threads \
+  --rate 200 \
+  --format raw \
+  -o .pose/profiles/host-native-pyspy-worker-pool-threshold-512.raw \
+  -- .venv/bin/python -c "<same graph, one warmup fill, then five timed fills>"
+
+source "$HOME/.cargo/env" && (cd native/pose_native_label_engine && cargo test -q)
+
+PYTHONPATH=src .venv/bin/python -m pytest \
+  tests/parity/test_native_labeling.py \
+  tests/parity/test_accelerated_labeling.py \
+  tests/unit/test_grpc_pose_db_runtime.py -q
+```
+
+#### Before Artifacts
+
+- `.pose/benchmarks/host-native-microbench/20260324T055053Z-pre-worker-pool-baseline.json`
+- `.pose/profiles/host-native-pyspy.raw`
+
+#### After Artifacts
+
+- `.pose/benchmarks/host-native-microbench/20260324T055727Z-post-threshold-256-revert.json`
+- `.pose/profiles/host-native-pyspy-worker-pool-threshold-512.raw`
+
+#### Rejected Candidate Artifacts
+
+- `.pose/benchmarks/host-native-microbench/20260324T055636Z-candidate-rayon-worker-pool-threshold-256.json`
+
+#### Metric Delta
+
+| metric | before | after | delta |
+| --- | ---: | ---: | ---: |
+| `host_in_place` mean ms | 3,480.90 | 3,039.10 | -441.80 (-12.69%) |
+| `host_in_place` median ms | 3,477.36 | 3,034.35 | -443.00 (-12.74%) |
+| `scratch_peak_bytes` | 687 | 687 | 0 (+0.00%) |
+
+#### Observed Evidence
+
+- worker-pool reuse:
+  `.pose/benchmarks/host-native-microbench/20260324T055319Z-candidate-rayon-worker-pool.json`
+  landed at `3,305.90` ms mean, `-175.00` ms (`-5.03%`) faster than the fresh
+  pre-pool baseline
+- threshold retune to `1024`:
+  `.pose/benchmarks/host-native-microbench/20260324T055508Z-candidate-rayon-worker-pool-threshold-1024.json`
+  landed at `3,154.36` ms mean, `-151.54` ms (`-4.58%`) faster than the pooled
+  `2048` threshold state
+- threshold retune to `512`:
+  `.pose/benchmarks/host-native-microbench/20260324T055553Z-candidate-rayon-worker-pool-threshold-512.json`
+  landed at `3,068.90` ms mean, `-85.46` ms (`-2.71%`) faster than the pooled
+  `1024` state
+- rejected threshold `256`:
+  `.pose/benchmarks/host-native-microbench/20260324T055636Z-candidate-rayon-worker-pool-threshold-256.json`
+  regressed to `3,152.85` ms mean, `+83.95` ms (`+2.74%`) slower than the
+  retained `512` state, so it was reverted immediately
+- final confirmation:
+  `.pose/benchmarks/host-native-microbench/20260324T055727Z-post-threshold-256-revert.json`
+  confirmed the retained `512` state at `3,039.10` ms mean and `3,034.35` ms
+  median
+- wall-clock sample before reuse:
+  in `.pose/profiles/host-native-pyspy.raw`, sampled stacks containing
+  `std::thread::lifecycle::spawn_unchecked(...)` accounted for `7.01%`,
+  `pthread_create` for `6.83%`, `clone` for `5.69%`, and
+  `JoinInner::join(...)` for `5.46%`
+- wall-clock sample after reuse:
+  in `.pose/profiles/host-native-pyspy-worker-pool-threshold-512.raw`, sampled
+  stacks containing `spawn_unchecked`, `pthread_create`, `clone`, and
+  `JoinInner::join(...)` all dropped to `0.00%`, while
+  `blake3::Hasher::update(...)` remained visible at `4.65%`
+
+#### Correctness Gates
+
+- tests:
+  `cargo test -q` in `native/pose_native_label_engine` passed on the retained
+  worker-pool plus `512` threshold state
+- parity and runtime checks:
+  `16` focused Python tests passed across native parity, accelerated parity,
+  and grpc runtime slices on the retained state
+- semantic scope:
+  the retained code changes only host-side worker scheduling for parallel
+  BLAKE3 pairwise layers plus the threshold used to enter that path; hash
+  domains, output bytes, graph order, and host scratch accounting stayed
+  unchanged
+
+#### Decision
+
+- accepted because:
+  persistent worker reuse removed the sampled OS thread-start/join overhead and
+  produced a large host-native wall-time win without increasing scratch
+- retained tuning:
+  after worker reuse removed most startup cost, lowering the parallel-width
+  threshold from `2048` to `512` improved the direct host benchmark further
+- rejected sub-step:
+  lowering the threshold again to `256` over-parallelized the remaining small
+  layers and regressed the benchmark, so it was reverted
+- implementation detail:
+  the retained path now runs host BLAKE3 pairwise layers through a persistent
+  rayon thread pool and chunks the mutable slot buffer across pool workers
+- follow-up:
+  if host optimization continues, the next likely target is reducing the
+  remaining BLAKE3 `update(...)` cost now that thread startup is no longer
+  materially visible in the wall-clock sample
+
 ## Template For Future Entries
 
 Copy this section and increment the entry number.

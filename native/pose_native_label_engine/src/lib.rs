@@ -2,11 +2,13 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::mem::size_of;
 use std::os::raw::c_char;
+use std::sync::OnceLock;
 use std::thread;
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyModule};
+use rayon::prelude::*;
 use sha3::digest::{ExtendableOutput, Update, XofReader};
 use sha3::Shake256;
 use zeroize::Zeroize;
@@ -15,8 +17,9 @@ const DOMAIN_NAMESPACE: &[u8] = b"pose-db";
 const ENCODING_VERSION_BYTES: [u8; 4] = 1u32.to_be_bytes();
 const SOURCE_LABEL_DOMAIN: &str = "pose-db/label/source/v1";
 const INTERNAL_LABEL_DOMAIN: &str = "pose-db/label/internal/v1";
-const HOST_BLAKE3_PARALLEL_SLOT_THRESHOLD: usize = 2048;
+const HOST_BLAKE3_PARALLEL_SLOT_THRESHOLD: usize = 512;
 const HOST_BLAKE3_PARALLEL_WORKER_CAP: usize = 8;
+const BLAKE3_FUSED_PREFIX_CAP: usize = 32;
 
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
@@ -670,6 +673,60 @@ impl LabelOracle {
         }
     }
 
+    fn blake3_internal_label_1_compact_into(
+        base: &blake3::Hasher,
+        output_bytes: usize,
+        node_index_bytes: &[u8; 8],
+        static_suffix: &[u8],
+        predecessor0: &[u8],
+        out: &mut [u8],
+    ) {
+        let mut prefix = [0u8; BLAKE3_FUSED_PREFIX_CAP];
+        let prefix_len = node_index_bytes.len() + static_suffix.len();
+        debug_assert!(prefix_len <= prefix.len());
+        prefix[..node_index_bytes.len()].copy_from_slice(node_index_bytes);
+        prefix[node_index_bytes.len()..prefix_len].copy_from_slice(static_suffix);
+
+        let mut hasher = base.clone();
+        hasher.update(&prefix[..prefix_len]);
+        hasher.update(predecessor0);
+        if output_bytes <= blake3::OUT_LEN {
+            let digest = hasher.finalize();
+            out.copy_from_slice(&digest.as_bytes()[..output_bytes]);
+        } else {
+            hasher.finalize_xof().fill(out);
+        }
+    }
+
+    fn blake3_internal_label_2_prefix_fused_into(
+        base: &blake3::Hasher,
+        output_bytes: usize,
+        node_index_bytes: &[u8; 8],
+        static_suffix0: &[u8],
+        predecessor0: &[u8],
+        static_suffix1: &[u8],
+        predecessor1: &[u8],
+        out: &mut [u8],
+    ) {
+        let mut prefix = [0u8; BLAKE3_FUSED_PREFIX_CAP];
+        let prefix_len = node_index_bytes.len() + static_suffix0.len();
+        debug_assert!(prefix_len <= prefix.len());
+        prefix[..node_index_bytes.len()].copy_from_slice(node_index_bytes);
+        prefix[node_index_bytes.len()..prefix_len].copy_from_slice(static_suffix0);
+
+        let mut hasher = base.clone();
+        hasher.update(&prefix[..prefix_len]);
+        hasher.update(predecessor0);
+        hasher.update(static_suffix1);
+        hasher.update(predecessor1);
+        if output_bytes <= blake3::OUT_LEN {
+            let digest = hasher.finalize();
+            out.copy_from_slice(&digest.as_bytes()[..output_bytes]);
+        } else {
+            hasher.finalize_xof().fill(out);
+        }
+    }
+
     fn pack_node_index(payload: &mut [u8], offset: usize, node_index: usize) -> PyResult<()> {
         payload[offset..offset + 8].copy_from_slice(&encode_u64(node_index)?);
         Ok(())
@@ -694,16 +751,14 @@ impl LabelOracle {
             &self.internal2_payload[self.internal2_node_index_offset + 8..self.internal2_label0_offset];
         let static_suffix1 =
             &self.internal2_payload[self.internal2_label0_offset + self.output_bytes..self.internal2_label1_offset];
-        Self::blake3_hash_parts_into(
+        Self::blake3_internal_label_2_prefix_fused_into(
             base,
             self.output_bytes,
-            &[
-                &node_index_bytes,
-                static_suffix0,
-                predecessor0,
-                static_suffix1,
-                predecessor1,
-            ],
+            &node_index_bytes,
+            static_suffix0,
+            predecessor0,
+            static_suffix1,
+            predecessor1,
             out,
         );
     }
@@ -741,10 +796,12 @@ impl LabelOracle {
                     .expect("blake3 internal1 base must exist for blake3-xof");
                 let static_suffix =
                     &self.internal1_payload[self.internal1_node_index_offset + 8..self.internal1_label0_offset];
-                Self::blake3_hash_parts_into(
+                Self::blake3_internal_label_1_compact_into(
                     base,
                     self.output_bytes,
-                    &[&node_index_bytes, static_suffix, predecessor0],
+                    &node_index_bytes,
+                    static_suffix,
+                    predecessor0,
                     out,
                 );
             }
@@ -781,16 +838,14 @@ impl LabelOracle {
                     &self.internal2_payload[self.internal2_node_index_offset + 8..self.internal2_label0_offset];
                 let static_suffix1 =
                     &self.internal2_payload[self.internal2_label0_offset + self.output_bytes..self.internal2_label1_offset];
-                Self::blake3_hash_parts_into(
+                Self::blake3_internal_label_2_prefix_fused_into(
                     base,
                     self.output_bytes,
-                    &[
-                        &node_index_bytes,
-                        static_suffix0,
-                        predecessor0,
-                        static_suffix1,
-                        predecessor1,
-                    ],
+                    &node_index_bytes,
+                    static_suffix0,
+                    predecessor0,
+                    static_suffix1,
+                    predecessor1,
                     out,
                 );
             }
@@ -990,14 +1045,32 @@ struct InPlaceChallengeLabeler<'a> {
 }
 
 impl<'a> InPlaceChallengeLabeler<'a> {
+    fn resolve_host_parallel_worker_budget() -> usize {
+        thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(1)
+            .min(HOST_BLAKE3_PARALLEL_WORKER_CAP)
+    }
+
+    fn host_blake3_thread_pool() -> &'static rayon::ThreadPool {
+        static HOST_BLAKE3_THREAD_POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+        HOST_BLAKE3_THREAD_POOL.get_or_init(|| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(Self::resolve_host_parallel_worker_budget())
+                .thread_name(|index| format!("pose-host-blake3-{index}"))
+                .build()
+                .expect("host blake3 worker pool must build")
+        })
+    }
+
     fn new(spec: &'a NativeSpec, counts: &'a GraphCounts) -> PyResult<Self> {
         let oracle = LabelOracle::new(spec)?;
         let temp0 = vec![0u8; spec.output_bytes];
         let temp1 = vec![0u8; spec.output_bytes];
-        let host_parallel_worker_budget = thread::available_parallelism()
-            .map(|count| count.get())
-            .unwrap_or(1)
-            .min(HOST_BLAKE3_PARALLEL_WORKER_CAP);
+        let host_parallel_worker_budget = Self::resolve_host_parallel_worker_budget();
+        if matches!(spec.hash_backend, HashBackend::Blake3Xof) && host_parallel_worker_budget >= 2 {
+            let _ = Self::host_blake3_thread_pool();
+        }
         let peak_scratch_bytes = oracle.accounted_bytes() + temp0.len() + temp1.len();
         Ok(Self {
             spec,
@@ -1051,7 +1124,7 @@ impl<'a> InPlaceChallengeLabeler<'a> {
         index_for_slot: F,
     ) -> bool
     where
-        F: Fn(usize) -> usize + Sync,
+        F: Fn(usize) -> usize + Sync + Send,
     {
         let output_bytes = self.slot_bytes();
         let block_slots = bit * 2;
@@ -1062,25 +1135,20 @@ impl<'a> InPlaceChallengeLabeler<'a> {
         }
 
         let blocks_per_worker = blocks.div_ceil(worker_count);
-        thread::scope(|scope| {
-            let mut remainder = buffer;
-            let mut next_block = 0usize;
-            let mut handles = Vec::with_capacity(worker_count);
-            for _ in 0..worker_count {
-                let remaining_blocks = blocks.saturating_sub(next_block);
-                if remaining_blocks == 0 {
-                    break;
-                }
-                let worker_blocks = remaining_blocks.min(blocks_per_worker);
-                let worker_bytes = worker_blocks * block_slots * output_bytes;
-                let (chunk, rest) = remainder.split_at_mut(worker_bytes);
-                let block_base_slot = next_block * block_slots;
-                let oracle = &self.oracle;
-                let index_for_slot = &index_for_slot;
-                handles.push(scope.spawn(move || {
+        let chunk_bytes = blocks_per_worker * block_slots * output_bytes;
+        let chunk_block_bytes = block_slots * output_bytes;
+        let oracle = &self.oracle;
+        let index_for_slot = &index_for_slot;
+        Self::host_blake3_thread_pool().install(|| {
+            buffer
+                .par_chunks_mut(chunk_bytes)
+                .enumerate()
+                .for_each(|(chunk_index, chunk)| {
                     let mut temp0 = vec![0u8; output_bytes];
                     let mut temp1 = vec![0u8; output_bytes];
-                    let chunk_block_bytes = block_slots * output_bytes;
+                    debug_assert_eq!(chunk.len() % chunk_block_bytes, 0);
+                    let worker_blocks = chunk.len() / chunk_block_bytes;
+                    let block_base_slot = chunk_index * blocks_per_worker * block_slots;
                     for local_block in 0..worker_blocks {
                         let block_start = local_block * chunk_block_bytes;
                         let block_slice = &mut chunk[block_start..block_start + chunk_block_bytes];
@@ -1106,13 +1174,7 @@ impl<'a> InPlaceChallengeLabeler<'a> {
                             );
                         }
                     }
-                }));
-                remainder = rest;
-                next_block += worker_blocks;
-            }
-            for handle in handles {
-                handle.join().expect("host blake3 worker must not panic");
-            }
+                });
         });
         true
     }
