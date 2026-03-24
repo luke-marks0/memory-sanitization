@@ -7,7 +7,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#define POSE_BLAKE3_INTERNAL2_BATCH_MAX 32
+#define POSE_BLAKE3_INTERNAL2_BATCH_MAX 16
 #define POSE_BLAKE3_INTERNAL2_PAIR_BATCH_MAX (POSE_BLAKE3_INTERNAL2_BATCH_MAX / 2)
 
 typedef blake3_chunk_state pose_blake3_chunk_state;

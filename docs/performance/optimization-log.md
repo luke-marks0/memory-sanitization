@@ -4353,6 +4353,231 @@ PYTHONPATH=src .venv/bin/python -m pytest \
   increasingly visible pool synchronization cost around the already-optimized
   pairwise kernel
 
+## Entry 038: AVX-512 Enablement And SIMD Batch-Width Tuning
+
+- date: `2026-03-24`
+- git head: `506d370d939bb26d50dc6999edd76af4ae91f50c`
+- status: accepted
+- hypothesis:
+  the retained sibling-pair kernel was still running with AVX-512 explicitly
+  disabled in the shim build, and its `32`-label batch width might not be the
+  best fit once wider SIMD dispatch is available; enabling AVX-512 and tuning
+  the batch width to match the effective SIMD wave size should reduce host-path
+  wall time further without increasing scratch.
+
+#### Change Scope
+
+- files:
+  `native/pose_native_label_engine/build.rs`,
+  `native/pose_native_label_engine/src/lib.rs`,
+  `native/pose_native_label_engine/src/blake3_internal2_batch.c`
+- profiles benchmarked:
+  direct host-native microbenchmark for
+  `fill_native_host_challenge_labels_in_place(...)` with
+  `m=65536`, `n=15`, `hash_backend=blake3-xof`, `label_width_bits=256`
+
+#### Commands
+
+```bash
+source "$HOME/.cargo/env" && scripts/build_native_label_engine.sh
+
+# before and after:
+# run the same inline host-native microbenchmark with:
+#   label_count_m = 65536
+#   graph_parameter_n = 15
+#   hash_backend = "blake3-xof"
+#   label_width_bits = 256
+#   repetitions = 5
+#   one warmup fill before timing
+# and archive the JSON payload under:
+#   .pose/benchmarks/host-native-microbench/<timestamp>-<label>.json
+
+source "$HOME/.cargo/env" && (cd native/pose_native_label_engine && cargo test -q)
+
+PYTHONPATH=src .venv/bin/python -m pytest \
+  tests/parity/test_native_labeling.py \
+  tests/parity/test_accelerated_labeling.py \
+  tests/unit/test_grpc_pose_db_runtime.py -q
+```
+
+#### Before Artifacts
+
+- `.pose/benchmarks/host-native-microbench/20260324T071250Z-candidate-internal2-sibling-pair-kernel.json`
+
+#### After Artifacts
+
+- `.pose/benchmarks/host-native-microbench/20260324T072747Z-post-batch8-revert-avx512-batch16.json`
+
+#### Rejected Candidate Artifacts
+
+- `.pose/benchmarks/host-native-microbench/20260324T072619Z-candidate-internal2-sibling-pair-avx512-batch8.json`
+
+#### Metric Delta
+
+| metric | before | after | delta |
+| --- | ---: | ---: | ---: |
+| `host_in_place` mean ms | 1,964.19 | 1,871.08 | -93.11 (-4.74%) |
+| `host_in_place` median ms | 1,963.77 | 1,870.16 | -93.61 (-4.77%) |
+| `scratch_peak_bytes` | 687 | 687 | 0 (+0.00%) |
+
+#### Observed Evidence
+
+- CPU capability:
+  `/proc/cpuinfo` on this machine reports both `avx2` and `avx512*` flags, so
+  wider BLAKE3 dispatch is available to test on real hardware
+- AVX-512 enablement:
+  removing `BLAKE3_NO_AVX512` from the shim build and keeping the existing
+  `32`-label sibling-pair batch produced
+  `.pose/benchmarks/host-native-microbench/20260324T072400Z-candidate-internal2-sibling-pair-avx512-enabled.json`
+  at `1,880.53` ms mean, `-83.66` ms (`-4.26%`) faster than the pre-AVX-512
+  sibling-pair baseline
+- batch-width retune to `16` labels:
+  `.pose/benchmarks/host-native-microbench/20260324T072515Z-candidate-internal2-sibling-pair-avx512-batch16.json`
+  landed at `1,844.80` ms mean, `-35.74` ms (`-1.90%`) faster than the AVX-512
+  `32`-label state
+- rejected batch-width `8` labels:
+  `.pose/benchmarks/host-native-microbench/20260324T072619Z-candidate-internal2-sibling-pair-avx512-batch8.json`
+  regressed to `1,856.53` ms mean, `+11.73` ms (`+0.64%`) slower than the
+  retained `16`-label AVX-512 state, so it was reverted immediately
+- final confirmation:
+  `.pose/benchmarks/host-native-microbench/20260324T072747Z-post-batch8-revert-avx512-batch16.json`
+  confirmed the retained AVX-512 plus `16`-label batch state at `1,871.08` ms
+  mean and `1,870.16` ms median
+- symbol linkage:
+  the final `libpose_blake3_internal2_batch.a` references
+  `blake3_hash_many_avx512` and `blake3_compress_in_place_avx512`, confirming
+  that the shim build no longer blocks AVX-512 dispatch
+
+#### Correctness Gates
+
+- tests:
+  `cargo test -q` in `native/pose_native_label_engine` passed on the retained
+  AVX-512 plus `16`-label state
+- parity checks:
+  `PYTHONPATH=src .venv/bin/python -m pytest tests/parity/test_native_labeling.py tests/parity/test_accelerated_labeling.py tests/unit/test_grpc_pose_db_runtime.py -q`
+  passed with `16` tests
+
+#### Decision
+
+- accepted because:
+  enabling AVX-512 and retuning the sibling-pair batch width to `16` labels
+  improved the host-native benchmark again without increasing scratch
+- retained tuning:
+  the final shim build keeps AVX-512 enabled and uses a `16`-label / `8`-pair
+  batch, which outperformed both the pre-AVX-512 `32`-label state and the
+  AVX-512 `32`-label state
+- rejected sub-step:
+  shrinking the batch again to `8` labels underfilled the wider path and
+  regressed wall time, so it was reverted
+- follow-up:
+  if host optimization continues, the next likely win is around pool
+  synchronization and parallel-layer scheduling rather than more BLAKE3 batch
+  width tightening
+
+## Entry 039: Top-Level Subtree Parallelism For Full-Width Host Fills
+
+- date: `2026-03-24`
+- git head: `506d370d939bb26d50dc6999edd76af4ae91f50c`
+- status: accepted
+- hypothesis:
+  even after the retained SIMD and pairwise-kernel work, the host scheduler was
+  still exposing only layer-local chunk parallelism; for the full-width host
+  fill where the left and right top-level standalone trees are independent, a
+  coarse top-level subtree split should let the persistent pool run two large
+  recursive tasks while each subtree still uses the retained batched layer
+  kernels internally.
+
+#### Change Scope
+
+- files:
+  `native/pose_native_label_engine/src/lib.rs`
+- profiles benchmarked:
+  direct host-native microbenchmark for
+  `fill_native_host_challenge_labels_in_place(...)` with
+  `m=65536`, `n=15`, `hash_backend=blake3-xof`, `label_width_bits=256`
+
+#### Commands
+
+```bash
+source "$HOME/.cargo/env" && scripts/build_native_label_engine.sh
+
+# before and after:
+# run the same inline host-native microbenchmark with:
+#   label_count_m = 65536
+#   graph_parameter_n = 15
+#   hash_backend = "blake3-xof"
+#   label_width_bits = 256
+#   repetitions = 5
+#   one warmup fill before timing
+# and archive the JSON payload under:
+#   .pose/benchmarks/host-native-microbench/<timestamp>-<label>.json
+
+source "$HOME/.cargo/env" && (cd native/pose_native_label_engine && cargo test -q)
+
+PYTHONPATH=src .venv/bin/python -m pytest \
+  tests/parity/test_native_labeling.py \
+  tests/parity/test_accelerated_labeling.py \
+  tests/unit/test_grpc_pose_db_runtime.py -q
+```
+
+#### Before Artifacts
+
+- `.pose/benchmarks/host-native-microbench/20260324T072747Z-post-batch8-revert-avx512-batch16.json`
+
+#### After Artifacts
+
+- `.pose/benchmarks/host-native-microbench/20260324T073613Z-candidate-top-level-subtree-parallel.json`
+
+#### Metric Delta
+
+| metric | before | after | delta |
+| --- | ---: | ---: | ---: |
+| `host_in_place` mean ms | 1,871.08 | 984.55 | -886.53 (-47.38%) |
+| `host_in_place` median ms | 1,870.16 | 984.89 | -885.27 (-47.34%) |
+| `scratch_peak_bytes` | 687 | 1,374 | +687 (+100.00%) |
+
+#### Observed Evidence
+
+- retained benchmark:
+  `.pose/benchmarks/host-native-microbench/20260324T073613Z-candidate-top-level-subtree-parallel.json`
+  landed at `984.55` ms mean and `984.89` ms median, improving the retained
+  AVX-512 batch-16 baseline by `-886.53` ms (`-47.38%`)
+- scratch tradeoff:
+  scratch rose from `687` to `1,374` bytes because the retained path keeps one
+  extra task-local labeler context alive while the two top-level standalone
+  subtrees execute concurrently
+- semantic guardrail:
+  the retained path only activates for the full-width host case where the
+  right output half is large enough to serve as its own in-place subtree
+  workspace; truncated right-side fills keep the previous serial top-level
+  schedule
+
+#### Correctness Gates
+
+- tests:
+  `cargo test -q` in `native/pose_native_label_engine` passed on the retained
+  top-level subtree-parallel state
+- parity checks:
+  `PYTHONPATH=src .venv/bin/python -m pytest tests/parity/test_native_labeling.py tests/parity/test_accelerated_labeling.py tests/unit/test_grpc_pose_db_runtime.py -q`
+  passed with `16` tests
+
+#### Decision
+
+- accepted because:
+  exposing the two independent top-level standalone trees as coarse tasks
+  produced a large host-native wall-time win while increasing scratch by only
+  one additional labeler context
+- implementation detail:
+  the retained full-width BLAKE3 host path now forks one extra labeler, runs
+  the left and right `standalone_right_prefix(...)` trees concurrently on the
+  persistent rayon pool, and lets each subtree keep using the retained
+  batched pairwise-layer kernels internally
+- follow-up:
+  if host optimization continues, the next useful question is whether a more
+  general coarse-task decomposition exists for truncated right-side fills,
+  since the current retained top-level split is intentionally guarded to the
+  full-width host case
+
 ## Template For Future Entries
 
 Copy this section and increment the entry number.

@@ -71,7 +71,6 @@ fn compile_blake3_internal2_batch() {
         build.flag("-std=c11");
     }
     build.include(&blake3_c_dir);
-    build.define("BLAKE3_NO_AVX512", None);
     build.file(blake3_c_dir.join("blake3.c"));
     build.file(blake3_c_dir.join("blake3_dispatch.c"));
     build.file(blake3_c_dir.join("blake3_portable.c"));

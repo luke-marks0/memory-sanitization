@@ -21,7 +21,7 @@ const HOST_BLAKE3_PARALLEL_SLOT_THRESHOLD: usize = 512;
 const HOST_BLAKE3_PARALLEL_WORKER_CAP: usize = 8;
 const BLAKE3_FUSED_PREFIX_CAP: usize = 32;
 #[cfg(pose_blake3_internal2_batch_available)]
-const BLAKE3_INTERNAL2_BATCH_MAX: usize = 32;
+const BLAKE3_INTERNAL2_BATCH_MAX: usize = 16;
 #[cfg(pose_blake3_internal2_batch_available)]
 const BLAKE3_INTERNAL2_PAIR_BATCH_MAX: usize = BLAKE3_INTERNAL2_BATCH_MAX / 2;
 
@@ -552,6 +552,7 @@ fn domain_prefix(domain: &str, field_count: usize) -> PyResult<Vec<u8>> {
     Ok(payload)
 }
 
+#[derive(Clone)]
 struct LabelOracle {
     hash_backend: HashBackend,
     output_bytes: usize,
@@ -1220,6 +1221,10 @@ struct InPlaceChallengeLabeler<'a> {
 }
 
 impl<'a> InPlaceChallengeLabeler<'a> {
+    fn context_bytes(&self) -> usize {
+        self.oracle.accounted_bytes() + self.temp0.len() + self.temp1.len()
+    }
+
     fn resolve_host_parallel_worker_budget() -> usize {
         thread::available_parallelism()
             .map(|count| count.get())
@@ -1256,6 +1261,22 @@ impl<'a> InPlaceChallengeLabeler<'a> {
             host_parallel_worker_budget,
             peak_scratch_bytes,
         })
+    }
+
+    fn fork_for_parallel(&self) -> Self {
+        let temp0 = vec![0u8; self.spec.output_bytes];
+        let temp1 = vec![0u8; self.spec.output_bytes];
+        let oracle = self.oracle.clone();
+        let peak_scratch_bytes = oracle.accounted_bytes() + temp0.len() + temp1.len();
+        Self {
+            spec: self.spec,
+            counts: self.counts,
+            oracle,
+            temp0,
+            temp1,
+            host_parallel_worker_budget: self.host_parallel_worker_budget,
+            peak_scratch_bytes,
+        }
     }
 
     fn slot_bytes(&self) -> usize {
@@ -1718,6 +1739,33 @@ impl<'a> InPlaceChallengeLabeler<'a> {
         }
         let split_at = left_width * self.slot_bytes();
         let (left_workspace, right_output) = target.split_at_mut(split_at);
+        if matches!(self.spec.hash_backend, HashBackend::Blake3Xof)
+            && self.host_parallel_worker_budget >= 2
+            && retained_from_right == left_width
+            && right_output.len() == split_at
+        {
+            let right_copy_start = self.counts.standalone[level];
+            let mut right_labeler = self.fork_for_parallel();
+            self.peak_scratch_bytes = self
+                .peak_scratch_bytes
+                .max(self.context_bytes() + right_labeler.context_bytes());
+            let (left_result, right_result) = Self::host_blake3_thread_pool().install(|| {
+                rayon::join(
+                    || self.standalone_right_prefix(level, left_width, left_workspace, 0),
+                    || {
+                        right_labeler.standalone_right_prefix(
+                            level,
+                            retained_from_right,
+                            right_output,
+                            right_copy_start,
+                        )
+                    },
+                )
+            });
+            left_result?;
+            right_result?;
+            return Ok(());
+        }
         if retained_from_right > 0 {
             let right_copy_start = self.counts.standalone[level];
             self.standalone_right_prefix(level, retained_from_right, left_workspace, right_copy_start)?;
