@@ -20,6 +20,46 @@ const INTERNAL_LABEL_DOMAIN: &str = "pose-db/label/internal/v1";
 const HOST_BLAKE3_PARALLEL_SLOT_THRESHOLD: usize = 512;
 const HOST_BLAKE3_PARALLEL_WORKER_CAP: usize = 8;
 const BLAKE3_FUSED_PREFIX_CAP: usize = 32;
+#[cfg(pose_blake3_internal2_batch_available)]
+const BLAKE3_INTERNAL2_BATCH_MAX: usize = 32;
+#[cfg(pose_blake3_internal2_batch_available)]
+const BLAKE3_INTERNAL2_PAIR_BATCH_MAX: usize = BLAKE3_INTERNAL2_BATCH_MAX / 2;
+
+#[cfg(pose_blake3_internal2_batch_available)]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Blake3ChunkState {
+    cv: [u32; 8],
+    chunk_counter: u64,
+    buf: [u8; 64],
+    buf_len: u8,
+    blocks_compressed: u8,
+    flags: u8,
+    _padding: [u8; 5],
+}
+
+#[cfg(pose_blake3_internal2_batch_available)]
+unsafe extern "C" {
+    fn pose_blake3_internal2_state_init(
+        prefix: *const u8,
+        prefix_len: usize,
+        out_state: *mut Blake3ChunkState,
+    );
+
+    fn pose_blake3_internal2_hash_many_pairs_32(
+        state: *const Blake3ChunkState,
+        static_suffix0: *const u8,
+        static_suffix0_len: usize,
+        static_suffix1: *const u8,
+        static_suffix1_len: usize,
+        left_node_indices: *const u8,
+        right_node_indices: *const u8,
+        block_slice: *const u8,
+        pair_offsets: *const u32,
+        num_pairs: usize,
+        out: *mut u8,
+    );
+}
 
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
@@ -527,6 +567,8 @@ struct LabelOracle {
     internal2_label0_offset: usize,
     internal2_label1_offset: usize,
     internal2_blake3_base: Option<blake3::Hasher>,
+    #[cfg(pose_blake3_internal2_batch_available)]
+    internal2_blake3_chunk_state: Option<Blake3ChunkState>,
 }
 
 impl LabelOracle {
@@ -562,6 +604,29 @@ impl LabelOracle {
             } else {
                 (None, None, None)
             };
+        #[cfg(pose_blake3_internal2_batch_available)]
+        let internal2_blake3_chunk_state =
+            if matches!(spec.hash_backend, HashBackend::Blake3Xof) && spec.output_bytes == blake3::OUT_LEN {
+                let mut chunk_state = Blake3ChunkState {
+                    cv: [0u32; 8],
+                    chunk_counter: 0,
+                    buf: [0u8; 64],
+                    buf_len: 0,
+                    blocks_compressed: 0,
+                    flags: 0,
+                    _padding: [0u8; 5],
+                };
+                unsafe {
+                    pose_blake3_internal2_state_init(
+                        internal2_payload.as_ptr(),
+                        internal2_node_index_offset,
+                        &mut chunk_state,
+                    );
+                }
+                Some(chunk_state)
+            } else {
+                None
+            };
 
         Ok(Self {
             hash_backend: spec.hash_backend,
@@ -578,6 +643,8 @@ impl LabelOracle {
             internal2_label0_offset,
             internal2_label1_offset,
             internal2_blake3_base,
+            #[cfg(pose_blake3_internal2_batch_available)]
+            internal2_blake3_chunk_state,
         })
     }
 
@@ -761,6 +828,114 @@ impl LabelOracle {
             predecessor1,
             out,
         );
+    }
+
+    #[cfg(pose_blake3_internal2_batch_available)]
+    fn try_blake3_internal_label_2_block_batch_32<F>(
+        &self,
+        block_slice: &mut [u8],
+        bit: usize,
+        global_block_base_slot: usize,
+        index_for_slot: &F,
+    ) -> bool
+    where
+        F: Fn(usize) -> usize + Sync + Send,
+    {
+        if !matches!(self.hash_backend, HashBackend::Blake3Xof) || self.output_bytes != blake3::OUT_LEN {
+            return false;
+        }
+        let Some(chunk_state) = self.internal2_blake3_chunk_state.as_ref() else {
+            return false;
+        };
+
+        let static_suffix0 =
+            &self.internal2_payload[self.internal2_node_index_offset + 8..self.internal2_label0_offset];
+        let static_suffix1 =
+            &self.internal2_payload[self.internal2_label0_offset + self.output_bytes..self.internal2_label1_offset];
+
+        let mut pair_count = 0usize;
+        let mut left_node_indices = [0u8; BLAKE3_INTERNAL2_PAIR_BATCH_MAX * 8];
+        let mut right_node_indices = [0u8; BLAKE3_INTERNAL2_PAIR_BATCH_MAX * 8];
+        let mut outputs = [0u8; BLAKE3_INTERNAL2_BATCH_MAX * blake3::OUT_LEN];
+        let mut pair_offsets = [0u32; BLAKE3_INTERNAL2_PAIR_BATCH_MAX * 2];
+
+        let flush_batch = |count: &mut usize,
+                           outputs: &mut [u8; BLAKE3_INTERNAL2_BATCH_MAX * blake3::OUT_LEN],
+                           block_slice: &mut [u8],
+                           pair_offsets: &[u32; BLAKE3_INTERNAL2_PAIR_BATCH_MAX * 2],
+                           left_node_indices: &[u8; BLAKE3_INTERNAL2_PAIR_BATCH_MAX * 8],
+                           right_node_indices: &[u8; BLAKE3_INTERNAL2_PAIR_BATCH_MAX * 8]| {
+            if *count == 0 {
+                return;
+            }
+            unsafe {
+                pose_blake3_internal2_hash_many_pairs_32(
+                    chunk_state,
+                    static_suffix0.as_ptr(),
+                    static_suffix0.len(),
+                    static_suffix1.as_ptr(),
+                    static_suffix1.len(),
+                    left_node_indices.as_ptr(),
+                    right_node_indices.as_ptr(),
+                    block_slice.as_ptr(),
+                    pair_offsets.as_ptr(),
+                    *count,
+                    outputs.as_mut_ptr(),
+                );
+            }
+            for pair in 0..*count {
+                for lane in 0..2 {
+                    let output_index = (pair * 2) + lane;
+                    let out_start = output_index * blake3::OUT_LEN;
+                    let output_offset = pair_offsets[output_index] as usize;
+                    block_slice[output_offset..output_offset + blake3::OUT_LEN]
+                        .copy_from_slice(&outputs[out_start..out_start + blake3::OUT_LEN]);
+                }
+            }
+            *count = 0;
+        };
+
+        for local in 0..bit {
+            if pair_count == BLAKE3_INTERNAL2_PAIR_BATCH_MAX {
+                flush_batch(
+                    &mut pair_count,
+                    &mut outputs,
+                    block_slice,
+                    &pair_offsets,
+                    &left_node_indices,
+                    &right_node_indices,
+                );
+            }
+            let left_slot = local;
+            let right_slot = left_slot + bit;
+            let left_start = left_slot * blake3::OUT_LEN;
+            let right_start = right_slot * blake3::OUT_LEN;
+            let left_node_index = u64::try_from(index_for_slot(global_block_base_slot + left_slot))
+                .expect("node index must fit u64 for batched blake3 labeling")
+                .to_be_bytes();
+            let right_node_index = u64::try_from(index_for_slot(global_block_base_slot + right_slot))
+                .expect("node index must fit u64 for batched blake3 labeling")
+                .to_be_bytes();
+            let node_start = pair_count * 8;
+            left_node_indices[node_start..node_start + 8].copy_from_slice(&left_node_index);
+            right_node_indices[node_start..node_start + 8].copy_from_slice(&right_node_index);
+            let offset_start = pair_count * 2;
+            pair_offsets[offset_start] =
+                u32::try_from(left_start).expect("batched blake3 left offset must fit u32");
+            pair_offsets[offset_start + 1] =
+                u32::try_from(right_start).expect("batched blake3 right offset must fit u32");
+            pair_count += 1;
+        }
+
+        flush_batch(
+            &mut pair_count,
+            &mut outputs,
+            block_slice,
+            &pair_offsets,
+            &left_node_indices,
+            &right_node_indices,
+        );
+        true
     }
 
     fn source_label_into(&mut self, node_index: usize, out: &mut [u8]) -> PyResult<()> {
@@ -1153,6 +1328,15 @@ impl<'a> InPlaceChallengeLabeler<'a> {
                         let block_start = local_block * chunk_block_bytes;
                         let block_slice = &mut chunk[block_start..block_start + chunk_block_bytes];
                         let global_block_base_slot = block_base_slot + (local_block * block_slots);
+                        #[cfg(pose_blake3_internal2_batch_available)]
+                        if oracle.try_blake3_internal_label_2_block_batch_32(
+                            block_slice,
+                            bit,
+                            global_block_base_slot,
+                            index_for_slot,
+                        ) {
+                            continue;
+                        }
                         for local in 0..bit {
                             let left_slot = local;
                             let right_slot = left_slot + bit;
@@ -1200,6 +1384,19 @@ impl<'a> InPlaceChallengeLabeler<'a> {
                 continue;
             }
             for block_base in (0..width).step_by(block) {
+                #[cfg(pose_blake3_internal2_batch_available)]
+                {
+                    let block_start = block_base * output_bytes;
+                    let block_slice = &mut buffer[block_start..block_start + (block * output_bytes)];
+                    if self.oracle.try_blake3_internal_label_2_block_batch_32(
+                        block_slice,
+                        bit,
+                        block_base,
+                        &|slot| layer_start_index + slot,
+                    ) {
+                        continue;
+                    }
+                }
                 for local in 0..bit {
                     let left = block_base + local;
                     let right = left + bit;
@@ -1297,6 +1494,20 @@ impl<'a> InPlaceChallengeLabeler<'a> {
                 continue;
             }
             for block_base in (0..width).step_by(block) {
+                #[cfg(pose_blake3_internal2_batch_available)]
+                {
+                    let block_start = block_base * output_bytes;
+                    let block_slice =
+                        &mut ingress_workspace[block_start..block_start + (block * output_bytes)];
+                    if self.oracle.try_blake3_internal_label_2_block_batch_32(
+                        block_slice,
+                        bit,
+                        block_base,
+                        &|slot| start_index + merged_indices.ingress_index(layer, slot),
+                    ) {
+                        continue;
+                    }
+                }
                 for local in 0..bit {
                     let left = block_base + local;
                     let right = left + bit;
@@ -1350,6 +1561,20 @@ impl<'a> InPlaceChallengeLabeler<'a> {
                 continue;
             }
             for block_base in (0..width).step_by(block) {
+                #[cfg(pose_blake3_internal2_batch_available)]
+                {
+                    let block_start = block_base * output_bytes;
+                    let block_slice =
+                        &mut ingress_workspace[block_start..block_start + (block * output_bytes)];
+                    if self.oracle.try_blake3_internal_label_2_block_batch_32(
+                        block_slice,
+                        bit,
+                        block_base,
+                        &|slot| start_index + merged_indices.center_index(layer, slot),
+                    ) {
+                        continue;
+                    }
+                }
                 for local in 0..bit {
                     let left = block_base + local;
                     let right = left + bit;

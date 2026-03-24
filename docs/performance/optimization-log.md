@@ -4101,6 +4101,258 @@ PYTHONPATH=src .venv/bin/python -m pytest \
   remaining BLAKE3 `update(...)` cost now that thread startup is no longer
   materially visible in the wall-clock sample
 
+## Entry 036: Host Internal-Label-2 Multi-Buffer BLAKE3 Kernel
+
+- date: `2026-03-24`
+- git head: `506d370d939bb26d50dc6999edd76af4ae91f50c`
+- status: accepted
+- hypothesis:
+  the retained host path was still spending material wall time in scalar
+  per-label `internal_label_2` BLAKE3 calls, so a specialized multi-buffer
+  kernel for the hot `blake3-xof`, `output_bytes == 32` case should reduce
+  `Hasher::update(...)` overhead and make batched `internal_label_2` hashing
+  the real hot path without increasing scratch.
+
+#### Change Scope
+
+- files:
+  `native/pose_native_label_engine/build.rs`,
+  `native/pose_native_label_engine/src/lib.rs`,
+  `native/pose_native_label_engine/src/blake3_internal2_batch.c`
+- profiles benchmarked:
+  direct host-native microbenchmark for
+  `fill_native_host_challenge_labels_in_place(...)` with
+  `m=65536`, `n=15`, `hash_backend=blake3-xof`, `label_width_bits=256`, plus a
+  raw `py-spy` wall-clock sample on the retained build
+
+#### Commands
+
+```bash
+source "$HOME/.cargo/env" && scripts/build_native_label_engine.sh
+
+# before and after:
+# run the same inline host-native microbenchmark with:
+#   label_count_m = 65536
+#   graph_parameter_n = 15
+#   hash_backend = "blake3-xof"
+#   label_width_bits = 256
+#   repetitions = 5
+#   one warmup fill before timing
+# and archive the JSON payload under:
+#   .pose/benchmarks/host-native-microbench/<timestamp>-<label>.json
+
+env PYTHONPATH=src /root/.local/bin/py-spy record \
+  --native \
+  --threads \
+  --rate 200 \
+  --format raw \
+  -o .pose/profiles/host-native-pyspy-internal2-multibuffer.raw \
+  -- .venv/bin/python -c "<same graph, one warmup fill, then five timed fills>"
+
+source "$HOME/.cargo/env" && (cd native/pose_native_label_engine && cargo test -q)
+
+PYTHONPATH=src .venv/bin/python -m pytest \
+  tests/parity/test_native_labeling.py \
+  tests/parity/test_accelerated_labeling.py \
+  tests/unit/test_grpc_pose_db_runtime.py -q
+```
+
+#### Before Artifacts
+
+- `.pose/benchmarks/host-native-microbench/20260324T055727Z-post-threshold-256-revert.json`
+- `.pose/profiles/host-native-pyspy-worker-pool-threshold-512.raw`
+
+#### After Artifacts
+
+- `.pose/benchmarks/host-native-microbench/20260324T064005Z-candidate-internal2-multibuffer-kernel.json`
+- `.pose/profiles/host-native-pyspy-internal2-multibuffer.raw`
+
+#### Metric Delta
+
+| metric | before | after | delta |
+| --- | ---: | ---: | ---: |
+| `host_in_place` mean ms | 3,039.10 | 2,115.60 | -923.50 (-30.39%) |
+| `host_in_place` median ms | 3,034.35 | 2,127.28 | -907.08 (-29.89%) |
+| `scratch_peak_bytes` | 687 | 687 | 0 (+0.00%) |
+
+#### Observed Evidence
+
+- retained benchmark:
+  `.pose/benchmarks/host-native-microbench/20260324T064005Z-candidate-internal2-multibuffer-kernel.json`
+  landed at `2,115.60` ms mean and `2,127.28` ms median, improving the fresh
+  worker-pool baseline by `-923.50` ms (`-30.39%`) with scratch unchanged
+- wall-clock sample before the batch kernel:
+  in `.pose/profiles/host-native-pyspy-worker-pool-threshold-512.raw`,
+  sampled stacks containing
+  `LabelOracle::blake3_internal_label_2_prefix_fused_into(...)` accounted for
+  `11.68%` and `blake3::Hasher::update(...)` for `4.65%`
+- wall-clock sample after the batch kernel:
+  in `.pose/profiles/host-native-pyspy-internal2-multibuffer.raw`, sampled
+  stacks containing `pose_blake3_internal2_hash_many_32(...)` accounted for
+  `28.08%`, while
+  `LabelOracle::blake3_internal_label_2_prefix_fused_into(...)` dropped to
+  `4.57%` and `blake3::Hasher::update(...)` dropped to `1.85%`
+- thread-start visibility:
+  sampled stacks containing `spawn_unchecked`, `pthread_create`, `clone`, and
+  `JoinInner::join(...)` remained at `0.00%`, so the retained win is from hash
+  batching rather than reintroducing worker lifecycle overhead
+- synchronization note:
+  pool-wait stacks containing `rayon_core::latch::LockLatch::wait_and_reset(...)`
+  rose from `5.92%` to `15.30%` of sampled stacks, which suggests the next
+  ceiling is synchronization and load balance rather than per-hash setup
+
+#### Correctness Gates
+
+- tests:
+  `cargo test -q` in `native/pose_native_label_engine` passed on the retained
+  batched-kernel state
+- parity checks:
+  `PYTHONPATH=src .venv/bin/python -m pytest tests/parity/test_native_labeling.py tests/parity/test_accelerated_labeling.py tests/unit/test_grpc_pose_db_runtime.py -q`
+  passed with `16` tests
+
+#### Decision
+
+- accepted because:
+  the specialized multi-buffer kernel produced a large host-native wall-time
+  win while keeping scratch flat and shifting sampled hot-path weight into the
+  new batched `internal_label_2` routine
+- retained guardrails:
+  the batched path is only enabled for the existing hot host configuration
+  (`blake3-xof` with `output_bytes == 32` on `x86`/`x86_64`); other shapes stay
+  on the existing scalar prefix-fused helper
+- implementation detail:
+  the build now compiles a small C shim alongside upstream BLAKE3 C sources so
+  the host path can pre-seed the common prefix once, batch the first full block
+  with `blake3_hash_many(...)`, and finish each lane with a single
+  `blake3_compress_in_place(...)`
+- follow-up:
+  if host optimization continues, the strongest next experiment is reducing the
+  now-more-visible pool synchronization cost rather than pushing further on
+  scalar BLAKE3 call overhead
+
+## Entry 037: Host Internal-Label-2 Sibling-Pair Kernel
+
+- date: `2026-03-24`
+- git head: `506d370d939bb26d50dc6999edd76af4ae91f50c`
+- status: accepted
+- hypothesis:
+  the retained multi-buffer `internal_label_2` kernel was still staging both
+  siblings in a pair as independent lanes, so a pair-specialized variant that
+  reads the shared predecessor labels once and reuses a single final block per
+  sibling pair should cut more staging overhead on the hot host path.
+
+#### Change Scope
+
+- files:
+  `native/pose_native_label_engine/src/lib.rs`,
+  `native/pose_native_label_engine/src/blake3_internal2_batch.c`
+- profiles benchmarked:
+  direct host-native microbenchmark for
+  `fill_native_host_challenge_labels_in_place(...)` with
+  `m=65536`, `n=15`, `hash_backend=blake3-xof`, `label_width_bits=256`, plus a
+  raw `py-spy` wall-clock sample on the retained sibling-pair build
+
+#### Commands
+
+```bash
+source "$HOME/.cargo/env" && scripts/build_native_label_engine.sh
+
+# before and after:
+# run the same inline host-native microbenchmark with:
+#   label_count_m = 65536
+#   graph_parameter_n = 15
+#   hash_backend = "blake3-xof"
+#   label_width_bits = 256
+#   repetitions = 5
+#   one warmup fill before timing
+# and archive the JSON payload under:
+#   .pose/benchmarks/host-native-microbench/<timestamp>-<label>.json
+
+env PYTHONPATH=src /root/.local/bin/py-spy record \
+  --native \
+  --threads \
+  --rate 200 \
+  --format raw \
+  -o .pose/profiles/host-native-pyspy-internal2-sibling-pair-kernel.raw \
+  -- .venv/bin/python -c "<same graph, one warmup fill, then five timed fills>"
+
+source "$HOME/.cargo/env" && (cd native/pose_native_label_engine && cargo test -q)
+
+PYTHONPATH=src .venv/bin/python -m pytest \
+  tests/parity/test_native_labeling.py \
+  tests/parity/test_accelerated_labeling.py \
+  tests/unit/test_grpc_pose_db_runtime.py -q
+```
+
+#### Before Artifacts
+
+- `.pose/benchmarks/host-native-microbench/20260324T064005Z-candidate-internal2-multibuffer-kernel.json`
+- `.pose/profiles/host-native-pyspy-internal2-multibuffer.raw`
+
+#### After Artifacts
+
+- `.pose/benchmarks/host-native-microbench/20260324T071250Z-candidate-internal2-sibling-pair-kernel.json`
+- `.pose/profiles/host-native-pyspy-internal2-sibling-pair-kernel.raw`
+
+#### Metric Delta
+
+| metric | before | after | delta |
+| --- | ---: | ---: | ---: |
+| `host_in_place` mean ms | 2,115.60 | 1,964.19 | -151.41 (-7.16%) |
+| `host_in_place` median ms | 2,127.28 | 1,963.77 | -163.50 (-7.69%) |
+| `scratch_peak_bytes` | 687 | 687 | 0 (+0.00%) |
+
+#### Observed Evidence
+
+- retained benchmark:
+  `.pose/benchmarks/host-native-microbench/20260324T071250Z-candidate-internal2-sibling-pair-kernel.json`
+  landed at `1,964.19` ms mean and `1,963.77` ms median, improving the prior
+  retained multi-buffer kernel by `-151.41` ms (`-7.16%`) with scratch
+  unchanged
+- wall-clock sample before the pair specialization:
+  in `.pose/profiles/host-native-pyspy-internal2-multibuffer.raw`, sampled
+  stacks containing `pose_blake3_internal2_hash_many_32(...)` accounted for
+  `28.08%`, `LabelOracle::blake3_internal_label_2_prefix_fused_into(...)` for
+  `4.57%`, and `blake3::Hasher::update(...)` for `1.85%`
+- wall-clock sample after the pair specialization:
+  in `.pose/profiles/host-native-pyspy-internal2-sibling-pair-kernel.raw`,
+  sampled stacks containing `pose_blake3_internal2_hash_many_pairs_32(...)`
+  accounted for `25.90%`, while `blake3::Hasher::update(...)` dropped further
+  to `1.40%`
+- thread-start visibility:
+  sampled stacks containing `spawn_unchecked`, `pthread_create`, `clone`, and
+  `JoinInner::join(...)` remained at `0.00%`, so the added win still came from
+  hash-path tightening rather than worker lifecycle changes
+- synchronization note:
+  pool-wait stacks containing `rayon_core::latch::LockLatch::wait_and_reset(...)`
+  rose from `15.30%` to `17.50%` of sampled stacks, which further supports
+  synchronization and load balance as the next likely ceiling
+
+#### Correctness Gates
+
+- tests:
+  `cargo test -q` in `native/pose_native_label_engine` passed on the retained
+  sibling-pair state
+- parity checks:
+  `PYTHONPATH=src .venv/bin/python -m pytest tests/parity/test_native_labeling.py tests/parity/test_accelerated_labeling.py tests/unit/test_grpc_pose_db_runtime.py -q`
+  passed with `16` tests
+
+#### Decision
+
+- accepted because:
+  the sibling-pair specialization produced another clear host-native win
+  without increasing scratch and kept the specialized pair kernel directly
+  visible in the wall-clock sample
+- implementation detail:
+  the retained path now batches `internal_label_2` work as sibling pairs,
+  passes shared predecessor offsets into the C shim, hashes the two sibling
+  node indices as adjacent lanes, and reuses one final block per pair instead
+  of staging two identical final blocks
+- follow-up:
+  if host optimization continues, the strongest next target is reducing the
+  increasingly visible pool synchronization cost around the already-optimized
+  pairwise kernel
+
 ## Template For Future Entries
 
 Copy this section and increment the entry number.
