@@ -3716,6 +3716,117 @@ Accepted sequence inside this round:
   scheduler work should start from fresh profiles rather than from more cached
   metadata experiments
 
+## Entry 033: Targeted Host CPU Profiling
+
+- date: `2026-03-24`
+- git head: `d130e717fa944d284e803ab30ffc9d1c8a83b6c7`
+- status: accepted
+- hypothesis:
+  after the retained host-path wins, a targeted CPU profile should confirm
+  whether the remaining wall time is still dominated by scheduler bookkeeping
+  inside `merged_center_ingress_in_place(...)` or whether the hot path has
+  shifted back to BLAKE3 update/finalize work inside `internal_label_2_into(...)`.
+
+#### Change Scope
+
+- files:
+  none; profiling-only round
+- profiles benchmarked:
+  direct host-native fill on the retained low-scratch branch state
+
+#### Commands
+
+```bash
+apt-get update && apt-get install -y valgrind
+
+source "$HOME/.cargo/env" && \
+  CARGO_PROFILE_RELEASE_DEBUG=1 \
+  RUSTFLAGS='-C force-frame-pointers=yes' \
+  scripts/build_native_label_engine.sh
+
+mkdir -p .pose/profiles
+PYTHONPATH=src valgrind \
+  --tool=callgrind \
+  --callgrind-out-file=.pose/profiles/host-native-callgrind.out \
+  .venv/bin/python - <<'PY'
+from pose.graphs import build_pose_db_graph
+from pose.graphs.native_engine import fill_native_host_challenge_labels_in_place
+
+graph = build_pose_db_graph(
+    label_count_m=65536,
+    graph_parameter_n=15,
+    hash_backend='blake3-xof',
+    label_width_bits=256,
+)
+target = bytearray(graph.label_count_m * (graph.label_width_bits // 8))
+fill_native_host_challenge_labels_in_place(
+    graph,
+    session_seed=bytes.fromhex('11' * 32),
+    target=target,
+)
+PY
+
+callgrind_annotate --inclusive=yes --tree=both --auto=yes \
+  .pose/profiles/host-native-callgrind.out \
+  > .pose/profiles/host-native-callgrind.annotate.txt
+```
+
+#### Artifacts
+
+- callgrind trace:
+  `.pose/profiles/host-native-callgrind.out`
+- annotated report:
+  `.pose/profiles/host-native-callgrind.annotate.txt`
+
+#### Observed Evidence
+
+- profile totals:
+  the Python entrypoint
+  `fill_challenge_label_array_at_address_native(...)` accounted for
+  `20,247,192,965` instruction refs (`60.70%` of program total)
+- dominant native stack:
+  `InPlaceChallengeLabeler::fill_challenge_buffer_in_place(...)` accounted for
+  `20,247,170,741` instruction refs (`60.70%`)
+- scheduler hotspot, inclusive:
+  `InPlaceChallengeLabeler::merged_center_ingress_in_place(...)` accounted for
+  `19,427,625,805` instruction refs (`58.24%`)
+- hash hotspot, inclusive:
+  `LabelOracle::internal_label_2_into(...)` accounted for
+  `17,373,851,712` instruction refs (`52.08%`)
+- BLAKE3 feed/finalize hotspot, inclusive:
+  `LabelOracle::blake3_hash_parts_into(...)` accounted for
+  `18,787,330,818` instruction refs (`56.32%`)
+- BLAKE3 library breakdown:
+  `blake3::Hasher::update(...)` accounted for `17,036,082,908` instruction
+  refs (`51.07%`), and the underlying SSE4.1 compression assembly accounted
+  for `14,967,373,824` instruction refs (`44.87%`)
+- merged-center breakdown:
+  inside `merged_center_ingress_in_place(...)`, the inclusive cost was mostly
+  `internal_label_2_into(...)` (`51.09%`) plus `internal_label_1_into(...)`
+  (`4.81%`), while explicit `std::thread::scoped::scope(...)` lines showed only
+  `0.07%` in this callgrind view
+- scheduler arithmetic lines:
+  direct `merged_indices.ingress_index(...)` and `center_index(...)` sites each
+  showed only small local instruction counts relative to the hash calls they
+  feed, which matches the earlier benchmark result that scratch-heavy scheduler
+  metadata caches were not worthwhile
+
+#### Decision
+
+- accepted because:
+  the targeted profile answered the handoff question directly without changing
+  the retained low-scratch implementation
+- conclusion:
+  the current host-native path is not primarily blocked on recursion/slice/index
+  bookkeeping anymore; the dominant cost is still BLAKE3 update/finalize work
+  driven by `internal_label_2_into(...)`, especially through
+  `blake3_hash_parts_into(...)`
+- follow-up:
+  if host work resumes, prioritize experiments that reduce the cost or count of
+  BLAKE3 `update(...)`/`finalize(...)` calls, and only test thread-pool reuse
+  if a wall-clock profiler outside valgrind confirms per-layer worker startup
+  is materially visible
+
 ## Template For Future Entries
 
 Copy this section and increment the entry number.
