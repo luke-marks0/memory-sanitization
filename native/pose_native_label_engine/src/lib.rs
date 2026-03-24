@@ -2,6 +2,7 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::mem::size_of;
 use std::os::raw::c_char;
+use std::thread;
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -14,6 +15,8 @@ const DOMAIN_NAMESPACE: &[u8] = b"pose-db";
 const ENCODING_VERSION_BYTES: [u8; 4] = 1u32.to_be_bytes();
 const SOURCE_LABEL_DOMAIN: &str = "pose-db/label/source/v1";
 const INTERNAL_LABEL_DOMAIN: &str = "pose-db/label/internal/v1";
+const HOST_BLAKE3_PARALLEL_SLOT_THRESHOLD: usize = 2048;
+const HOST_BLAKE3_PARALLEL_WORKER_CAP: usize = 8;
 
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
@@ -672,6 +675,39 @@ impl LabelOracle {
         Ok(())
     }
 
+    fn blake3_internal_label_2_into_shared(
+        &self,
+        node_index: usize,
+        predecessor0: &[u8],
+        predecessor1: &[u8],
+        out: &mut [u8],
+    ) {
+        debug_assert!(matches!(self.hash_backend, HashBackend::Blake3Xof));
+        let node_index_bytes = u64::try_from(node_index)
+            .expect("node index must fit u64 for host blake3 labeling")
+            .to_be_bytes();
+        let base = self
+            .internal2_blake3_base
+            .as_ref()
+            .expect("blake3 internal2 base must exist for blake3-xof");
+        let static_suffix0 =
+            &self.internal2_payload[self.internal2_node_index_offset + 8..self.internal2_label0_offset];
+        let static_suffix1 =
+            &self.internal2_payload[self.internal2_label0_offset + self.output_bytes..self.internal2_label1_offset];
+        Self::blake3_hash_parts_into(
+            base,
+            self.output_bytes,
+            &[
+                &node_index_bytes,
+                static_suffix0,
+                predecessor0,
+                static_suffix1,
+                predecessor1,
+            ],
+            out,
+        );
+    }
+
     fn source_label_into(&mut self, node_index: usize, out: &mut [u8]) -> PyResult<()> {
         match self.hash_backend {
             HashBackend::Blake3Xof => {
@@ -949,6 +985,7 @@ struct InPlaceChallengeLabeler<'a> {
     oracle: LabelOracle,
     temp0: Vec<u8>,
     temp1: Vec<u8>,
+    host_parallel_worker_budget: usize,
     peak_scratch_bytes: usize,
 }
 
@@ -957,6 +994,10 @@ impl<'a> InPlaceChallengeLabeler<'a> {
         let oracle = LabelOracle::new(spec)?;
         let temp0 = vec![0u8; spec.output_bytes];
         let temp1 = vec![0u8; spec.output_bytes];
+        let host_parallel_worker_budget = thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(1)
+            .min(HOST_BLAKE3_PARALLEL_WORKER_CAP);
         let peak_scratch_bytes = oracle.accounted_bytes() + temp0.len() + temp1.len();
         Ok(Self {
             spec,
@@ -964,6 +1005,7 @@ impl<'a> InPlaceChallengeLabeler<'a> {
             oracle,
             temp0,
             temp1,
+            host_parallel_worker_budget,
             peak_scratch_bytes,
         })
     }
@@ -991,6 +1033,90 @@ impl<'a> InPlaceChallengeLabeler<'a> {
         buffer.len() / output_bytes
     }
 
+    fn blake3_parallel_worker_count(&self, width: usize, blocks: usize) -> usize {
+        if !matches!(self.spec.hash_backend, HashBackend::Blake3Xof) {
+            return 1;
+        }
+        if width < HOST_BLAKE3_PARALLEL_SLOT_THRESHOLD || blocks < 2 {
+            return 1;
+        }
+        self.host_parallel_worker_budget.min(blocks)
+    }
+
+    fn try_parallel_blake3_pairwise_layer<F>(
+        &self,
+        buffer: &mut [u8],
+        width: usize,
+        bit: usize,
+        index_for_slot: F,
+    ) -> bool
+    where
+        F: Fn(usize) -> usize + Sync,
+    {
+        let output_bytes = self.slot_bytes();
+        let block_slots = bit * 2;
+        let blocks = width / block_slots;
+        let worker_count = self.blake3_parallel_worker_count(width, blocks);
+        if worker_count < 2 {
+            return false;
+        }
+
+        let blocks_per_worker = blocks.div_ceil(worker_count);
+        thread::scope(|scope| {
+            let mut remainder = buffer;
+            let mut next_block = 0usize;
+            let mut handles = Vec::with_capacity(worker_count);
+            for _ in 0..worker_count {
+                let remaining_blocks = blocks.saturating_sub(next_block);
+                if remaining_blocks == 0 {
+                    break;
+                }
+                let worker_blocks = remaining_blocks.min(blocks_per_worker);
+                let worker_bytes = worker_blocks * block_slots * output_bytes;
+                let (chunk, rest) = remainder.split_at_mut(worker_bytes);
+                let block_base_slot = next_block * block_slots;
+                let oracle = &self.oracle;
+                let index_for_slot = &index_for_slot;
+                handles.push(scope.spawn(move || {
+                    let mut temp0 = vec![0u8; output_bytes];
+                    let mut temp1 = vec![0u8; output_bytes];
+                    let chunk_block_bytes = block_slots * output_bytes;
+                    for local_block in 0..worker_blocks {
+                        let block_start = local_block * chunk_block_bytes;
+                        let block_slice = &mut chunk[block_start..block_start + chunk_block_bytes];
+                        let global_block_base_slot = block_base_slot + (local_block * block_slots);
+                        for local in 0..bit {
+                            let left_slot = local;
+                            let right_slot = left_slot + bit;
+                            let left_start = left_slot * output_bytes;
+                            let right_start = right_slot * output_bytes;
+                            temp0.copy_from_slice(&block_slice[left_start..left_start + output_bytes]);
+                            temp1.copy_from_slice(&block_slice[right_start..right_start + output_bytes]);
+                            oracle.blake3_internal_label_2_into_shared(
+                                index_for_slot(global_block_base_slot + left_slot),
+                                &temp0,
+                                &temp1,
+                                &mut block_slice[left_start..left_start + output_bytes],
+                            );
+                            oracle.blake3_internal_label_2_into_shared(
+                                index_for_slot(global_block_base_slot + right_slot),
+                                &temp0,
+                                &temp1,
+                                &mut block_slice[right_start..right_start + output_bytes],
+                            );
+                        }
+                    }
+                }));
+                remainder = rest;
+                next_block += worker_blocks;
+            }
+            for handle in handles {
+                handle.join().expect("host blake3 worker must not panic");
+            }
+        });
+        true
+    }
+
     fn butterfly_layers_in_place_simple(
         &mut self,
         dimension: usize,
@@ -1003,6 +1129,14 @@ impl<'a> InPlaceChallengeLabeler<'a> {
             let bit = 1usize << (dimension - 1 - layer);
             let block = bit * 2;
             let layer_start_index = start_index + (layer * width);
+            if self.try_parallel_blake3_pairwise_layer(
+                buffer,
+                width,
+                bit,
+                |slot| layer_start_index + slot,
+            ) {
+                continue;
+            }
             for block_base in (0..width).step_by(block) {
                 for local in 0..bit {
                     let left = block_base + local;
@@ -1092,6 +1226,14 @@ impl<'a> InPlaceChallengeLabeler<'a> {
         for layer in 1..=dimension {
             let bit = 1usize << (dimension - layer);
             let block = bit * 2;
+            if self.try_parallel_blake3_pairwise_layer(
+                ingress_workspace,
+                width,
+                bit,
+                |slot| start_index + merged_indices.ingress_index(layer, slot),
+            ) {
+                continue;
+            }
             for block_base in (0..width).step_by(block) {
                 for local in 0..bit {
                     let left = block_base + local;
@@ -1137,6 +1279,14 @@ impl<'a> InPlaceChallengeLabeler<'a> {
         for layer in 1..=dimension {
             let bit = 1usize << (dimension - layer);
             let block = bit * 2;
+            if self.try_parallel_blake3_pairwise_layer(
+                ingress_workspace,
+                width,
+                bit,
+                |slot| start_index + merged_indices.center_index(layer, slot),
+            ) {
+                continue;
+            }
             for block_base in (0..width).step_by(block) {
                 for local in 0..bit {
                     let left = block_base + local;

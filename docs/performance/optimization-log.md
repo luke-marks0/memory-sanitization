@@ -3506,6 +3506,216 @@ source "$HOME/.cargo/env" && scripts/build_native_label_engine.sh
   (parallel scheduler work or larger scheduler-structure changes), not another
   tiny BLAKE3 helper reshuffle
 
+## Entry 031: Host Blake3 Scheduler Parallelism
+
+- date: `2026-03-24`
+- git head: `5f2c63f6cf288968db632628e83c598d04642a97`
+- status: accepted
+- hypothesis:
+  the remaining host-native bottleneck should now be scheduler-side CPU work,
+  not hash-prefix setup; parallelizing the large pairwise BLAKE3 layers inside
+  the in-place scheduler should reduce host-only runtime, and the activation
+  threshold can then be widened only while the benchmark continues to improve.
+
+#### Change Scope
+
+- files:
+  `native/pose_native_label_engine/src/lib.rs`,
+  `docs/performance/optimization-log.md`
+- profiles benchmarked:
+  the same direct host-native microbenchmark used in Entries 029 and 030
+
+#### Commands
+
+```bash
+source "$HOME/.cargo/env" && scripts/build_native_label_engine.sh
+
+source "$HOME/.cargo/env" && (cd native/pose_native_label_engine && cargo test -q)
+
+source "$HOME/.cargo/env" && PYTHONPATH=src uv run pytest \
+  tests/parity/test_native_labeling.py \
+  tests/parity/test_accelerated_labeling.py \
+  tests/unit/test_grpc_pose_db_runtime.py -q
+
+# before and after:
+# run the same inline host-native microbenchmark with:
+#   label_count_m = 65536
+#   graph_parameter_n = 15
+#   hash_backend = "blake3-xof"
+#   label_width_bits = 256
+#   repetitions = 5
+#   one warmup fill before timing
+# and archive the JSON payload under:
+#   .pose/benchmarks/host-native-microbench/<timestamp>-<label>.json
+```
+
+#### Before Artifacts
+
+- `.pose/benchmarks/host-native-microbench/20260324T041737Z-pre-parallelism-baseline.json`
+
+#### After Artifacts
+
+- retained scheduler-parallelism confirmation:
+  `.pose/benchmarks/host-native-microbench/20260324T042350Z-post-threshold-revert-confirmation.json`
+- supporting accepted and rejected tuning artifacts:
+  `.pose/benchmarks/host-native-microbench/20260324T041953Z-candidate-parallel-butterfly.json`,
+  `.pose/benchmarks/host-native-microbench/20260324T042113Z-candidate-parallel-threshold-4096.json`,
+  `.pose/benchmarks/host-native-microbench/20260324T042204Z-candidate-parallel-threshold-2048.json`,
+  `.pose/benchmarks/host-native-microbench/20260324T042256Z-candidate-parallel-threshold-1024.json`
+
+#### Metric Delta
+
+Overall retained state, compared against the fresh pre-parallelism baseline:
+
+| metric | before | after | delta |
+| --- | ---: | ---: | ---: |
+| `host_in_place` mean ms | 4,626.91 | 3,588.92 | -1,037.99 (-22.43%) |
+| `host_in_place` median ms | 4,626.43 | 3,593.51 | -1,032.93 (-22.33%) |
+| `scratch_peak_bytes` | 687 | 687 | 0 (+0.00%) |
+
+Accepted and rejected threshold-tuning sequence:
+
+| step | before mean ms | after mean ms | delta |
+| --- | ---: | ---: | ---: |
+| pairwise-layer parallelism, threshold `8192` | 4,626.91 | 3,924.46 | -702.45 (-15.18%) |
+| widen threshold to `4096` | 3,924.46 | 3,745.14 | -179.31 (-4.57%) |
+| widen threshold to `2048` | 3,745.14 | 3,607.64 | -137.51 (-3.67%) |
+| widen threshold to `1024` | 3,607.64 | 3,679.99 | +72.35 (+2.00%) |
+
+#### Correctness Gates
+
+- tests:
+  `cargo test -q` in `native/pose_native_label_engine` passed on the retained
+  scheduler-parallelism state
+- parity and runtime checks:
+  `16` focused Python tests passed across native parity, accelerated parity,
+  and grpc runtime slices on the retained state
+- benchmark gate:
+  the `1024`-slot activation threshold was explicitly rejected and reverted
+  because it made the host-native benchmark slower
+
+#### Decision
+
+- accepted because:
+  scheduler-side CPU parallelism materially improved the direct host-native
+  path after the earlier BLAKE3 prefix-state win, and the accepted threshold
+  widens continued to improve the same benchmark while keeping scratch flat
+- implementation detail:
+  the retained code parallelizes large BLAKE3 pairwise in-place layers in both
+  the butterfly helper and the merged ingress/center schedules, using shared
+  immutable BLAKE3 state plus per-worker temporary label buffers
+- rejected tuning:
+  expanding the same mechanism down to `1024` slots lost performance, so the
+  retained threshold stays at `2048`
+- follow-up:
+  the remaining handoff item is broader recursion, slice, and copy tightening;
+  that still needs a bounded experiment of its own rather than another blind
+  threshold drop
+
+## Entry 032: Host Scheduler Overhead Tightening
+
+- date: `2026-03-24`
+- git head: `d130e717fa944d284e803ab30ffc9d1c8a83b6c7`
+- status: partially accepted
+- hypothesis:
+  after the retained hash-path and scheduler-parallelism wins, the next host
+  bottleneck is repeated scheduler arithmetic and worker-budget discovery in
+  `merged_center_ingress_in_place(...)`; caching the merged displacement tables
+  once per fill and reusing the host worker budget should reduce that overhead
+  enough to matter on the direct host-native benchmark.
+
+#### Change Scope
+
+- files:
+  `native/pose_native_label_engine/src/lib.rs`
+- profiles benchmarked:
+  the same direct host-native microbenchmark used in Entries 029 and 031
+
+#### Commands
+
+```bash
+source "$HOME/.cargo/env" && scripts/build_native_label_engine.sh
+
+source "$HOME/.cargo/env" && (cd native/pose_native_label_engine && cargo test -q)
+
+PYTHONPATH=src .venv/bin/python -m pytest \
+  tests/parity/test_native_labeling.py \
+  tests/parity/test_accelerated_labeling.py \
+  tests/unit/test_grpc_pose_db_runtime.py -q
+
+# before:
+#   .pose/benchmarks/host-native-microbench/20260324T043105Z-pre-scheduler-index-baseline.json
+#
+# intermediate:
+#   .pose/benchmarks/host-native-microbench/20260324T043427Z-candidate-scheduler-index-cache.json
+#
+# scratch-heavy intermediate with both caches:
+#   .pose/benchmarks/host-native-microbench/20260324T043619Z-candidate-worker-budget-cache.json
+#
+# final retained:
+#   .pose/benchmarks/host-native-microbench/20260324T044226Z-post-index-cache-revert.json
+```
+
+#### Before Artifacts
+
+- `.pose/benchmarks/host-native-microbench/20260324T043105Z-pre-scheduler-index-baseline.json`
+
+#### After Artifacts
+
+- retained scheduler-overhead result:
+  `.pose/benchmarks/host-native-microbench/20260324T044226Z-post-index-cache-revert.json`
+- supporting intermediate results:
+  `.pose/benchmarks/host-native-microbench/20260324T043427Z-candidate-scheduler-index-cache.json`,
+  `.pose/benchmarks/host-native-microbench/20260324T043619Z-candidate-worker-budget-cache.json`
+
+#### Metric Delta
+
+Overall retained state, compared against the fresh pre-scheduler baseline:
+
+| metric | before | after | delta |
+| --- | ---: | ---: | ---: |
+| `host_in_place` mean ms | 3,665.85 | 3,536.82 | -129.03 (-3.52%) |
+| `host_in_place` median ms | 3,666.17 | 3,533.93 | -132.24 (-3.61%) |
+| `scratch_peak_bytes` | 687 | 687 | 0 (+0.00%) |
+
+Accepted sequence inside this round:
+
+| step | before mean ms | after mean ms | delta |
+| --- | ---: | ---: | ---: |
+| cache merged displacement tables for merged ingress/center scheduling | 3,665.85 | 3,631.57 | -34.28 (-0.94%) |
+| cache host parallel worker budget for pairwise-layer fanout | 3,631.57 | 3,578.27 | -53.30 (-1.47%) |
+| remove merged displacement tables, keep worker budget cache | 3,578.27 | 3,536.82 | -41.44 (-1.16%) |
+
+#### Correctness Gates
+
+- tests:
+  `cargo test -q` in `native/pose_native_label_engine` passed on the retained
+  scheduler-cache state
+- parity and runtime checks:
+  `16` focused Python tests passed across native parity, accelerated parity,
+  and grpc runtime slices on the retained state
+- semantic scope:
+  the retained code changes only scheduler-side indexing and thread-budget
+  reuse; hash domains, label bytes, and graph order stayed unchanged
+
+#### Decision
+
+- accepted because:
+  the final low-scratch variant was faster than both the fresh `687`-byte
+  baseline and the scratch-heavy intermediate
+- rejected sub-step:
+  the merged displacement tables were not worth the added `~256 KiB` of host
+  scratch, especially because removing them while keeping the worker-budget
+  cache produced a faster result anyway
+- implementation detail:
+  the retained code now resolves the host BLAKE3 worker budget once per
+  labeler instead of once per pairwise layer; merged ingress/center indexing
+  went back to direct `MergedIndexArithmetic` calls
+- follow-up:
+  this closes the last explicit handoff item at a bounded level; any further
+  scheduler work should start from fresh profiles rather than from more cached
+  metadata experiments
+
 ## Template For Future Entries
 
 Copy this section and increment the entry number.
