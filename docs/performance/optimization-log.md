@@ -4578,6 +4578,131 @@ PYTHONPATH=src .venv/bin/python -m pytest \
   since the current retained top-level split is intentionally guarded to the
   full-width host case
 
+## Entry 040: Deployment-Host Codegen And Rust PGO
+
+- date: `2026-03-24`
+- git head: `506d370d939bb26d50dc6999edd76af4ae91f50c`
+- status: accepted
+- hypothesis:
+  the retained host binary might still improve when built specifically for the
+  deployment machine and then reoptimized with a workload-specific profile; if
+  host-specific codegen regressed, the PGO pass should still be evaluated on
+  the generic retained build before rejecting the whole idea.
+
+#### Change Scope
+
+- files:
+  no source-tree changes were retained; this round only changed native build
+  flags and produced a retained PGO-built wheel for the current deployment host
+- profiles benchmarked:
+  direct host-native microbenchmark for
+  `fill_native_host_challenge_labels_in_place(...)` with
+  `m=65536`, `n=15`, `hash_backend=blake3-xof`, `label_width_bits=256`
+
+#### Commands
+
+```bash
+source "$HOME/.cargo/env" && rustup component add llvm-tools-preview
+
+# rejected host-specific codegen candidate
+export RUSTFLAGS='-C target-cpu=native'
+export CFLAGS='-march=native -mtune=native'
+source "$HOME/.cargo/env" && scripts/build_native_label_engine.sh
+
+# accepted Rust PGO candidate
+rm -rf .pose/pgo/host-native
+mkdir -p .pose/pgo/host-native/raw
+export CARGO_TARGET_DIR=/workspace/memory-sanitization/.pose/build/target-pgo-gen
+export RUSTFLAGS='-Cprofile-generate=/workspace/memory-sanitization/.pose/pgo/host-native/raw'
+source "$HOME/.cargo/env" && scripts/build_native_label_engine.sh
+
+# exercise the instrumented build on repeated host-native fills, producing
+# `.profraw` files under `.pose/pgo/host-native/raw/`
+
+source "$HOME/.cargo/env" && \
+  "$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-profdata" merge \
+  -o .pose/pgo/host-native/merged.profdata \
+  .pose/pgo/host-native/raw/*.profraw
+
+export CARGO_TARGET_DIR=/workspace/memory-sanitization/.pose/build/target-pgo-use
+export RUSTFLAGS='-Cprofile-use=/workspace/memory-sanitization/.pose/pgo/host-native/merged.profdata -Cllvm-args=-pgo-warn-missing-function=false'
+source "$HOME/.cargo/env" && scripts/build_native_label_engine.sh
+
+source "$HOME/.cargo/env" && (cd native/pose_native_label_engine && cargo test -q)
+
+PYTHONPATH=src .venv/bin/python -m pytest \
+  tests/parity/test_native_labeling.py \
+  tests/parity/test_accelerated_labeling.py \
+  tests/unit/test_grpc_pose_db_runtime.py -q
+```
+
+#### Before Artifacts
+
+- `.pose/benchmarks/host-native-microbench/20260324T073613Z-candidate-top-level-subtree-parallel.json`
+
+#### After Artifacts
+
+- `.pose/benchmarks/host-native-microbench/20260324T080210Z-candidate-rust-pgo.json`
+- `.pose/pgo/host-native/merged.profdata`
+
+#### Rejected Candidate Artifacts
+
+- `.pose/benchmarks/host-native-microbench/20260324T075543Z-candidate-target-cpu-native.json`
+
+#### Metric Delta
+
+| metric | before | after | delta |
+| --- | ---: | ---: | ---: |
+| `host_in_place` mean ms | 984.55 | 959.42 | -25.13 (-2.55%) |
+| `host_in_place` median ms | 984.89 | 966.20 | -18.69 (-1.90%) |
+| `scratch_peak_bytes` | 1,374 | 1,374 | 0 (+0.00%) |
+
+#### Observed Evidence
+
+- rejected host-specific codegen:
+  `.pose/benchmarks/host-native-microbench/20260324T075543Z-candidate-target-cpu-native.json`
+  regressed to `1,072.98` ms mean, `+88.43` ms (`+8.98%`) slower than the
+  retained pre-PGO baseline, so the `target-cpu=native` / `-march=native`
+  build was rejected immediately
+- accepted Rust PGO:
+  `.pose/benchmarks/host-native-microbench/20260324T080210Z-candidate-rust-pgo.json`
+  landed at `959.42` ms mean and `966.20` ms median, improving the retained
+  generic baseline by `-25.13` ms (`-2.55%`) with scratch unchanged
+- profile artifact:
+  the retained PGO build used `.pose/pgo/host-native/merged.profdata`, merged
+  from `17` raw profile files gathered on the real host-native labeling
+  workload
+- environment note:
+  the host initially lacked `llvm-profdata`; installing the matching
+  `llvm-tools-preview` Rust component made a toolchain-compatible PGO cycle
+  possible without changing source code
+
+#### Correctness Gates
+
+- tests:
+  `cargo test -q` in `native/pose_native_label_engine` passed on the retained
+  PGO-built state
+- parity checks:
+  `PYTHONPATH=src .venv/bin/python -m pytest tests/parity/test_native_labeling.py tests/parity/test_accelerated_labeling.py tests/unit/test_grpc_pose_db_runtime.py -q`
+  passed with `16` tests
+
+#### Decision
+
+- accepted because:
+  Rust PGO produced a real host-native win on the deployment machine without
+  increasing scratch, while pure host-specific codegen regressed and was
+  correctly rejected
+- rejected sub-step:
+  `target-cpu=native` plus native C tuning was slower on this workload, so it
+  should not be enabled for this host path
+- implementation detail:
+  the current installed native extension is the PGO-built wheel produced from
+  the retained generic code plus the merged deployment-host profile
+- follow-up:
+  if deployment packaging needs to reproduce this build automatically, the next
+  step is to codify the retained PGO recipe into a dedicated build script or CI
+  job rather than relying on ad hoc environment variables
+
 ## Template For Future Entries
 
 Copy this section and increment the entry number.
