@@ -3012,6 +3012,343 @@ The new HBM scratch breakdown is exact:
   if cooperative fused kernels are revisited later, they should keep using the
   arithmetic recurrence rather than reintroducing device index tables
 
+## Entry 027: Global Cooperative-Fused HBM Kernels
+
+- date:
+  2026-03-23
+- git head:
+  `9d32375db0a66d50d926daecbc86ea13ff248de9`
+- status:
+  rejected and reverted
+- hypothesis:
+  enabling the existing cooperative fused connector and merged-center ingress
+  kernels across the CUDA HBM path should cut host launch overhead enough to
+  improve in-place wipe time without changing scratch or label bytes.
+
+#### Change Scope
+
+- files:
+  `native/pose_native_label_engine/src/hbm_inplace.cu`
+- profiles benchmarked:
+  direct native HBM microbenchmark with `m = 65536`, `n = 15`; temporary
+  end-to-end `single-h100-hbm-2mib` HBM-only development profile on the same
+  H100 timing window
+
+#### Commands
+
+```bash
+scripts/build_native_label_engine.sh
+
+PYTHONPATH=src .venv/bin/python -m pytest -q \
+  tests/unit/test_native_hbm_microbench.py \
+  tests/parity/test_native_labeling.py
+
+PYTHONPATH=src .venv/bin/python -m pose.benchmarks.native_hbm_microbench \
+  --label-count-m 65536 \
+  --graph-parameter-n 15 \
+  --hash-backend blake3-xof \
+  --label-width-bits 256 \
+  --device 0 \
+  --repetitions 3 \
+  --output-json .pose/benchmarks/native-hbm-microbench/20260323T224329Z-baseline.json
+
+PYTHONPATH=src .venv/bin/python - <<'PY'
+import json
+import tempfile
+from pathlib import Path
+from textwrap import dedent
+from pose.benchmarks.harness import run_benchmark
+from pose.protocol.codec import load_json_file
+
+profile_text = dedent("""
+name: single-h100-hbm-2mib-current
+benchmark_class: cold
+target_devices:
+  host: false
+  gpus: [0]
+reserve_policy:
+  host_bytes: 0
+  per_gpu_bytes: 2097152
+host_target_fraction: 0.0
+per_gpu_target_fraction: 1.0
+w_bits: 256
+graph_family: pose-db-drg-v1
+hash_backend: blake3-xof
+adversary_model: general
+attacker_budget_bytes_assumed: 65536
+challenge_policy:
+  rounds_r: 64
+  target_success_bound: 1.0e-9
+  sample_with_replacement: true
+deadline_policy:
+  response_deadline_us: 5000
+  session_timeout_ms: 120000
+calibration_policy:
+  lookup_samples: 512
+  hash_measurement_rounds: 3
+  hashes_per_round: 4096
+  transport_overhead_us: 180
+  serialization_overhead_us: 90
+  safety_margin_fraction: 0.25
+cleanup_policy:
+  zeroize: true
+  verify_zeroization: false
+repetition_count: 1
+transport_mode: grpc
+coverage_threshold: 1.0
+prover_sandbox:
+  mode: process_budget_dev
+  process_memory_max_bytes: 17179869184
+  require_no_visible_gpus: false
+  memlock_max_bytes: 0
+  file_size_max_bytes: 0
+""").strip() + "\n"
+with tempfile.TemporaryDirectory(prefix="pose-h100-hbm-2mib-current-") as temp_dir:
+    profile_path = Path(temp_dir) / "single-h100-hbm-2mib-current.yaml"
+    profile_path.write_text(profile_text, encoding="utf-8")
+    payload = run_benchmark(str(profile_path))
+    summary = load_json_file(Path(payload["archive"]["summary_path"]))
+    print(json.dumps({"run_directory": payload["archive"]["run_directory"], "summary": summary}, sort_keys=True))
+PY
+
+# Toggle kEnableExperimentalCooperativeFusedKernels=true, rebuild, rerun the
+# same pytest slice, rerun the same microbenchmark with:
+#   --output-json .pose/benchmarks/native-hbm-microbench/20260323T224555Z-cooperative.json
+# and rerun the same inline benchmark snippet with profile name
+# single-h100-hbm-2mib-cooperative.
+```
+
+#### Before Artifacts
+
+- fresh same-session microbenchmark baseline:
+  `.pose/benchmarks/native-hbm-microbench/20260323T224329Z-baseline.json`
+- fresh same-session end-to-end HBM baseline:
+  `.pose/benchmarks/single-h100-hbm-2mib-current/20260323T224330Z`
+
+#### After Artifacts
+
+- rejected cooperative microbenchmark:
+  `.pose/benchmarks/native-hbm-microbench/20260323T224555Z-cooperative.json`
+- rejected cooperative HBM artifact:
+  `.pose/benchmarks/single-h100-hbm-2mib-cooperative/20260323T224555Z`
+
+#### Metric Delta
+
+Direct native HBM microbenchmark, compared against the same-session baseline:
+
+| metric | before | after | delta |
+| --- | ---: | ---: | ---: |
+| micro `gpu_in_place` ms | 12,817.72 | 17,334.34 | +4,516.62 (+35.24%) |
+| micro `total_kernel_launches` | 655,016 | 262,172 | -392,844 (-59.97%) |
+| micro `cooperative_launch_successes` | 0 | 131,068 | +131,068 |
+| micro `cooperative_launch_fallbacks` | 131,070 | 2 | -131,068 (-100.00%) |
+| micro `launch_merged_center_ingress_cooperative` | 0 | 131,038 | +131,038 |
+| micro `launch_connector_copy_cooperative` | 0 | 30 | +30 |
+
+End-to-end temporary `single-h100-hbm-2mib`, compared against the same-session
+baseline:
+
+| metric | before | after | delta |
+| --- | ---: | ---: | ---: |
+| total ms | 24,615 | 35,518 | +10,903 (+44.29%) |
+| label_generation ms | 17,873 | 28,740 | +10,867 (+60.80%) |
+| expected_response_prep ms | 5,857 | 5,905 | +48 (+0.82%) |
+| graph_construction ms | 95 | 98 | +3 (+3.16%) |
+| fast_phase ms | 205 | 205 | 0 (+0.00%) |
+| verifier_cpu ms | 6,532 | 6,482 | -50 (-0.77%) |
+| scratch_peak_bytes | 204 | 204 | 0 (+0.00%) |
+| q/gamma | 0.0096 | 0.0215 | +0.0118 (+122.47%) |
+
+#### Correctness Gates
+
+- tests:
+  the focused native benchmark and parity slice passed before and after the
+  revert (`9 passed`)
+- parity checks:
+  no label-order or scratch accounting changes were observed; the rejected
+  runs kept `scratch_peak_bytes = 204`
+- hardware checks:
+  both the direct microbenchmark and the rejected end-to-end HBM rerun
+  returned `SUCCESS` with `declared_stage_copy_bytes=0`
+
+#### Decision
+
+- rejected because:
+  the cooperative kernels did exactly what the launch counters suggested,
+  collapsing almost all fallback launches into real cooperative launches and
+  cutting total launches by about `60%`, but the actual GPU wipe path became
+  materially slower on both the direct HBM microbenchmark and end-to-end
+  `label_generation`
+- conclusion:
+  on this H100 path, global cooperative fusion trades away too much kernel
+  efficiency for the launch-count reduction; the merged-center ingress
+  cooperative kernel is the dominant new execution shape and it does not pay
+  for itself as a blanket replacement
+- follow-up:
+  if cooperative kernels are revisited later, the next round should profile a
+  narrower selective policy or inspect register/occupancy pressure inside the
+  merged-center ingress cooperative kernel instead of enabling the cooperative
+  path globally
+
+## Entry 028: Host DRAM Label-Generation Scoping Note
+
+- date:
+  2026-03-24
+- git head:
+  `9d32375db0a66d50d926daecbc86ea13ff248de9`
+- status:
+  accepted
+- hypothesis:
+  after the accepted host in-place and arithmetic-schedule rounds, the
+  remaining host-only bottleneck should already be identifiable from the
+  current artifacts and code paths without another broad benchmarking pass;
+  the likely remaining work is inside the native CPU label engine itself,
+  especially the binary-predecessor hash path.
+
+#### Change Scope
+
+- files:
+  `docs/performance/optimization-log.md`
+- profiles benchmarked:
+  none; this round records an analysis note over existing artifacts and code
+  paths rather than changing runtime behavior
+- code paths inspected:
+  `src/pose/prover/grpc_service.py`,
+  `src/pose/graphs/labeling.py`,
+  `native/pose_native_label_engine/src/lib.rs`
+
+#### Commands
+
+```bash
+PYTHONPATH=src .venv/bin/python - <<'PY'
+from collections import Counter
+from pose.graphs.construction import build_pose_db_graph
+
+graph = build_pose_db_graph(
+    label_count_m=65536,
+    graph_parameter_n=15,
+    hash_backend='blake3-xof',
+    label_width_bits=256,
+)
+counts = Counter()
+
+def consume(predecessor_count: int, predecessor0: int, predecessor1: int) -> None:
+    counts[int(predecessor_count)] += 1
+
+graph.visit_predecessor_specs(consume)
+print(counts[0], counts[1], counts[2], graph.node_count)
+PY
+
+jq '{host_in_place_ms:.variants.host_in_place.wall_ms.mean,stream_noop_ms:.variants.stream_noop_writer.wall_ms.mean,stream_gpu_writer_ms:.variants.stream_gpu_writer.wall_ms.mean,host_scratch:.variants.host_in_place.scratch_peak_bytes.mean,stream_scratch:.variants.stream_noop_writer.scratch_peak_bytes.mean}' \
+  .pose/benchmarks/native-hbm-microbench/20260323T224329Z-baseline.json
+
+jq '{host_in_place_ms:.variants.host_in_place.wall_ms.mean,stream_noop_ms:.variants.stream_noop_writer.wall_ms.mean,stream_gpu_writer_ms:.variants.stream_gpu_writer.wall_ms.mean,host_scratch:.variants.host_in_place.scratch_peak_bytes.mean,stream_scratch:.variants.stream_noop_writer.scratch_peak_bytes.mean}' \
+  .pose/benchmarks/native-hbm-microbench/20260323T224555Z-cooperative.json
+```
+
+#### Artifacts And Evidence Analyzed
+
+- accepted host arithmetic artifact:
+  `.pose/benchmarks/single-host-2mib/20260323T133119Z`
+- supporting direct native microbenchmark baseline:
+  `.pose/benchmarks/native-hbm-microbench/20260323T224329Z-baseline.json`
+- supporting direct native microbenchmark cooperative rerun:
+  `.pose/benchmarks/native-hbm-microbench/20260323T224555Z-cooperative.json`
+
+#### Observed Evidence
+
+Host-path dispatch:
+
+- contiguous host sessions already take the native in-place path in
+  `src/pose/prover/grpc_service.py`; they do **not** use the per-label
+  `attachment.write_at(...)` callback loop that the mixed and non-contiguous
+  fallback paths still use
+- verifier `expected_response_prep` already uses the same native
+  `compute_native_challenge_label_array(...)` path through
+  `src/pose/graphs/labeling.py`
+
+Accepted host artifact context:
+
+- Entry 025 already reduced host `label_generation` from `3,699` ms to
+  `3,496` ms and `expected_response_prep` from `3,769` ms to `3,538` ms while
+  dropping host scratch from `7,865,015` bytes to `687` bytes
+- the earlier scratch audit showed that the old host scratch problem was
+  almost entirely merged-plan metadata, and Entry 025 removed that metadata
+  from the active host path
+
+Direct native host evidence from the current local microbenchmark artifacts:
+
+| metric | `20260323T224329Z-baseline` | `20260323T224555Z-cooperative` |
+| --- | ---: | ---: |
+| `host_in_place` ms | 4,932.80 | 4,519.58 |
+| `stream_noop_writer` ms | 6,077.08 | 5,594.64 |
+| `stream_gpu_writer` ms | 5,323.20 | 5,275.74 |
+| `host_in_place` scratch bytes | 687 | 687 |
+| `stream_*` scratch bytes | 82,444,933 | 82,444,933 |
+
+Representative host graph predecessor mix for `m=65536`, `n=15`:
+
+| label type | count | share of nodes |
+| --- | ---: | ---: |
+| source | 2 | 0.0000% |
+| `internal_label_1` | 1,179,646 | 7.3770% |
+| `internal_label_2` | 14,811,134 | 92.6229% |
+
+Code-level reading of the current host hot path:
+
+- the active host fill is `fill_challenge_label_array_at_address_native(...)`
+  in `native/pose_native_label_engine/src/lib.rs`
+- the main work now sits in the native in-place scheduler and hash loops:
+  `butterfly_layers_in_place_simple(...)`,
+  `merged_center_ingress_in_place(...)`,
+  `connected_full(...)`,
+  `connected_prefix(...)`,
+  `standalone_base(...)`,
+  `standalone_right_prefix(...)`,
+  and especially `internal_label_2_into(...)`
+- the current native hash path still rebuilds a BLAKE3 or SHAKE256 hasher from
+  scratch on every label; the previous Python-side hash-state cloning idea was
+  already rejected, but the host-native path has not yet had the equivalent
+  targeted CPU-side experiment
+
+#### Correctness Gates
+
+- claim-scope checks:
+  none required; this round changes no runtime behavior
+- evidence checks:
+  the predecessor-arity count summed exactly to the inspected graph node count
+  (`15,990,782`)
+- artifact checks:
+  the current local direct-native artifacts still show the same structural
+  result as the accepted log entries: host in-place is faster than the native
+  streaming path and keeps scratch tiny
+
+#### Decision
+
+- accepted because:
+  the host-only bottleneck class is already obvious enough to scope the next
+  work without another general benchmarking round
+- scoping conclusion:
+  do **not** spend the next host-focused round on Python fallback bookkeeping,
+  per-label host attachment writes, host stage copies, merged-plan scratch
+  removal, or a broad benchmark sweep before profiling; those are no longer
+  the dominant host-only path costs
+- prioritized host targets:
+  `1.` add CPU parallelism inside the native in-place scheduler
+  `2.` optimize the native `internal_label_2_into(...)` fast path, especially
+  for `blake3-xof`
+  `3.` only after that, tighten recursion, slice, and copy overhead inside the
+  in-place scheduler itself
+- benchmarking conclusion:
+  more detailed benchmarking is useful only as a targeted follow-up for
+  host-native candidates, especially to compare hash-path changes and to
+  validate multithreaded scaling or NUMA behavior on larger host profiles
+- follow-up:
+  if a new instance is dedicated to host work, start with targeted CPU
+  profiling around `fill_challenge_label_array_at_address_native(...)`,
+  `merged_center_ingress_in_place(...)`, and `internal_label_2_into(...)`
+  rather than another broad end-to-end benchmark survey
+
 ## Template For Future Entries
 
 Copy this section and increment the entry number.
