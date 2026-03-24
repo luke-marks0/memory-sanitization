@@ -3349,6 +3349,163 @@ Code-level reading of the current host hot path:
   `merged_center_ingress_in_place(...)`, and `internal_label_2_into(...)`
   rather than another broad end-to-end benchmark survey
 
+## Entry 029: Host Blake3 Prefix-State Reuse
+
+- date: `2026-03-24`
+- git head: `5f2c63f6cf288968db632628e83c598d04642a97`
+- status: accepted
+- hypothesis:
+  the host-native `blake3-xof` path should stop rebuilding and refilling a
+  fresh hasher with the same static label prefix on every label; cloning a
+  pre-seeded BLAKE3 state and hashing only the dynamic slices should reduce the
+  dominant host-only CPU cost without changing any label bytes.
+
+#### Change Scope
+
+- files:
+  `native/pose_native_label_engine/src/lib.rs`
+- profiles benchmarked:
+  direct host-native microbenchmark for
+  `fill_native_host_challenge_labels_in_place(...)` with
+  `m=65536`, `n=15`, `hash_backend=blake3-xof`, `label_width_bits=256`
+
+#### Commands
+
+```bash
+source "$HOME/.cargo/env" && scripts/build_native_label_engine.sh
+
+source "$HOME/.cargo/env" && (cd native/pose_native_label_engine && cargo test -q)
+
+source "$HOME/.cargo/env" && PYTHONPATH=src uv run pytest \
+  tests/parity/test_native_labeling.py \
+  tests/parity/test_accelerated_labeling.py \
+  tests/unit/test_grpc_pose_db_runtime.py -q
+
+# before and after:
+# run the same inline host-native microbenchmark with:
+#   label_count_m = 65536
+#   graph_parameter_n = 15
+#   hash_backend = "blake3-xof"
+#   label_width_bits = 256
+#   repetitions = 5
+#   one warmup fill before timing
+# and archive the JSON payload under:
+#   .pose/benchmarks/host-native-microbench/<timestamp>-<label>.json
+```
+
+#### Before Artifacts
+
+- `.pose/benchmarks/host-native-microbench/20260324T023737Z-baseline.json`
+
+#### After Artifacts
+
+- `.pose/benchmarks/host-native-microbench/20260324T024100Z-candidate-blake3-base-state.json`
+
+#### Metric Delta
+
+| metric | before | after | delta |
+| --- | ---: | ---: | ---: |
+| `host_in_place` mean ms | 6,773.69 | 4,626.36 | -2,147.33 (-31.70%) |
+| `host_in_place` median ms | 6,770.77 | 4,626.02 | -2,144.76 (-31.68%) |
+| `scratch_peak_bytes` | 687 | 687 | 0 (+0.00%) |
+
+#### Correctness Gates
+
+- tests:
+  `cargo test -q` in `native/pose_native_label_engine` passed
+- parity and runtime checks:
+  `16` focused Python tests passed across native parity, accelerated parity,
+  and grpc runtime slices
+- semantic scope:
+  the kept change only alters how the native host BLAKE3 path feeds bytes into
+  the hasher; graph schedule, output width, and scratch accounting stayed
+  unchanged
+
+#### Decision
+
+- accepted because:
+  the direct host-native benchmark improved materially while preserving the
+  current tiny host scratch footprint
+- implementation detail:
+  the accepted path now keeps pre-seeded BLAKE3 base states for source,
+  `internal_label_1`, and `internal_label_2`, then hashes only the changing
+  node-index and predecessor-label slices per call
+- follow-up:
+  smaller helper-level cleanups still need to earn their keep with the same
+  host-native benchmark before they should remain in tree
+
+## Entry 030: Rejected Host Blake3 Helper Specialization
+
+- date: `2026-03-24`
+- git head: `5f2c63f6cf288968db632628e83c598d04642a97`
+- status: rejected
+- hypothesis:
+  after the accepted base-state reuse win, further specializing the BLAKE3
+  helper calls and bypassing the generic node-index and parts-array path might
+  shave a little more overhead from the same host-native loop.
+
+#### Change Scope
+
+- files:
+  `native/pose_native_label_engine/src/lib.rs`
+- profiles benchmarked:
+  the same direct host-native microbenchmark used in Entry 029
+
+#### Commands
+
+```bash
+source "$HOME/.cargo/env" && scripts/build_native_label_engine.sh
+
+# before:
+#   .pose/benchmarks/host-native-microbench/20260324T024100Z-candidate-blake3-base-state.json
+#
+# after:
+#   .pose/benchmarks/host-native-microbench/20260324T024414Z-candidate-blake3-specialized.json
+#
+# revert confirmation:
+#   .pose/benchmarks/host-native-microbench/20260324T024548Z-post-revert-confirmation.json
+```
+
+#### Before Artifacts
+
+- `.pose/benchmarks/host-native-microbench/20260324T024100Z-candidate-blake3-base-state.json`
+
+#### After Artifacts
+
+- `.pose/benchmarks/host-native-microbench/20260324T024414Z-candidate-blake3-specialized.json`
+
+#### Metric Delta
+
+| metric | before | after | delta |
+| --- | ---: | ---: | ---: |
+| `host_in_place` mean ms | 4,626.36 | 4,930.47 | +304.11 (+6.57%) |
+| `host_in_place` median ms | 4,626.02 | 4,923.93 | +297.91 (+6.44%) |
+| `scratch_peak_bytes` | 687 | 687 | 0 (+0.00%) |
+
+#### Correctness Gates
+
+- benchmark gate:
+  the candidate was slower on the same direct host-native benchmark, so it was
+  rejected before any broader validation pass
+- revert confirmation:
+  after reverting the rejected helper specialization, the same benchmark landed
+  at `4,729.76` ms mean in
+  `.pose/benchmarks/host-native-microbench/20260324T024548Z-post-revert-confirmation.json`,
+  still well below the original baseline
+
+#### Decision
+
+- rejected because:
+  the narrower helper specialization made the host-native path slower instead
+  of faster
+- action taken:
+  reverted the failed specialization and retained only the accepted base-state
+  reuse change from Entry 029
+- conclusion:
+  the next host-only round should move to a different bottleneck class
+  (parallel scheduler work or larger scheduler-structure changes), not another
+  tiny BLAKE3 helper reshuffle
+
 ## Template For Future Entries
 
 Copy this section and increment the entry number.

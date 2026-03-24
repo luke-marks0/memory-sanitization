@@ -511,13 +511,16 @@ struct LabelOracle {
     output_bytes: usize,
     source_payload: Vec<u8>,
     source_node_index_offset: usize,
+    source_blake3_base: Option<blake3::Hasher>,
     internal1_payload: Vec<u8>,
     internal1_node_index_offset: usize,
     internal1_label0_offset: usize,
+    internal1_blake3_base: Option<blake3::Hasher>,
     internal2_payload: Vec<u8>,
     internal2_node_index_offset: usize,
     internal2_label0_offset: usize,
     internal2_label1_offset: usize,
+    internal2_blake3_base: Option<blake3::Hasher>,
 }
 
 impl LabelOracle {
@@ -539,19 +542,36 @@ impl LabelOracle {
                 &spec.graph_descriptor_digest,
                 spec.output_bytes,
             )?;
+        let (source_blake3_base, internal1_blake3_base, internal2_blake3_base) =
+            if matches!(spec.hash_backend, HashBackend::Blake3Xof) {
+                (
+                    Some(Self::build_blake3_base(&source_payload[..source_node_index_offset])),
+                    Some(Self::build_blake3_base(
+                        &internal1_payload[..internal1_node_index_offset],
+                    )),
+                    Some(Self::build_blake3_base(
+                        &internal2_payload[..internal2_node_index_offset],
+                    )),
+                )
+            } else {
+                (None, None, None)
+            };
 
         Ok(Self {
             hash_backend: spec.hash_backend,
             output_bytes: spec.output_bytes,
             source_payload,
             source_node_index_offset,
+            source_blake3_base,
             internal1_payload,
             internal1_node_index_offset,
             internal1_label0_offset,
+            internal1_blake3_base,
             internal2_payload,
             internal2_node_index_offset,
             internal2_label0_offset,
             internal2_label1_offset,
+            internal2_blake3_base,
         })
     }
 
@@ -622,14 +642,51 @@ impl LabelOracle {
         Ok((payload, node_index_offset, label0_offset, label1_offset))
     }
 
+    fn build_blake3_base(prefix: &[u8]) -> blake3::Hasher {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(prefix);
+        hasher
+    }
+
+    fn blake3_hash_parts_into(
+        base: &blake3::Hasher,
+        output_bytes: usize,
+        parts: &[&[u8]],
+        out: &mut [u8],
+    ) {
+        debug_assert_eq!(out.len(), output_bytes);
+        let mut hasher = base.clone();
+        for part in parts {
+            hasher.update(part);
+        }
+        if output_bytes <= blake3::OUT_LEN {
+            let digest = hasher.finalize();
+            out.copy_from_slice(&digest.as_bytes()[..output_bytes]);
+        } else {
+            hasher.finalize_xof().fill(out);
+        }
+    }
+
     fn pack_node_index(payload: &mut [u8], offset: usize, node_index: usize) -> PyResult<()> {
         payload[offset..offset + 8].copy_from_slice(&encode_u64(node_index)?);
         Ok(())
     }
 
     fn source_label_into(&mut self, node_index: usize, out: &mut [u8]) -> PyResult<()> {
-        Self::pack_node_index(&mut self.source_payload, self.source_node_index_offset, node_index)?;
-        self.hash_backend.hash_into(&self.source_payload, out);
+        match self.hash_backend {
+            HashBackend::Blake3Xof => {
+                let node_index_bytes = encode_u64(node_index)?;
+                let base = self
+                    .source_blake3_base
+                    .as_ref()
+                    .expect("blake3 source base must exist for blake3-xof");
+                Self::blake3_hash_parts_into(base, self.output_bytes, &[&node_index_bytes], out);
+            }
+            HashBackend::Shake256 => {
+                Self::pack_node_index(&mut self.source_payload, self.source_node_index_offset, node_index)?;
+                self.hash_backend.hash_into(&self.source_payload, out);
+            }
+        }
         Ok(())
     }
 
@@ -639,14 +696,34 @@ impl LabelOracle {
         predecessor0: &[u8],
         out: &mut [u8],
     ) -> PyResult<()> {
-        Self::pack_node_index(
-            &mut self.internal1_payload,
-            self.internal1_node_index_offset,
-            node_index,
-        )?;
-        self.internal1_payload[self.internal1_label0_offset..self.internal1_label0_offset + self.output_bytes]
-            .copy_from_slice(predecessor0);
-        self.hash_backend.hash_into(&self.internal1_payload, out);
+        match self.hash_backend {
+            HashBackend::Blake3Xof => {
+                let node_index_bytes = encode_u64(node_index)?;
+                let base = self
+                    .internal1_blake3_base
+                    .as_ref()
+                    .expect("blake3 internal1 base must exist for blake3-xof");
+                let static_suffix =
+                    &self.internal1_payload[self.internal1_node_index_offset + 8..self.internal1_label0_offset];
+                Self::blake3_hash_parts_into(
+                    base,
+                    self.output_bytes,
+                    &[&node_index_bytes, static_suffix, predecessor0],
+                    out,
+                );
+            }
+            HashBackend::Shake256 => {
+                Self::pack_node_index(
+                    &mut self.internal1_payload,
+                    self.internal1_node_index_offset,
+                    node_index,
+                )?;
+                self.internal1_payload
+                    [self.internal1_label0_offset..self.internal1_label0_offset + self.output_bytes]
+                    .copy_from_slice(predecessor0);
+                self.hash_backend.hash_into(&self.internal1_payload, out);
+            }
+        }
         Ok(())
     }
 
@@ -657,16 +734,45 @@ impl LabelOracle {
         predecessor1: &[u8],
         out: &mut [u8],
     ) -> PyResult<()> {
-        Self::pack_node_index(
-            &mut self.internal2_payload,
-            self.internal2_node_index_offset,
-            node_index,
-        )?;
-        self.internal2_payload[self.internal2_label0_offset..self.internal2_label0_offset + self.output_bytes]
-            .copy_from_slice(predecessor0);
-        self.internal2_payload[self.internal2_label1_offset..self.internal2_label1_offset + self.output_bytes]
-            .copy_from_slice(predecessor1);
-        self.hash_backend.hash_into(&self.internal2_payload, out);
+        match self.hash_backend {
+            HashBackend::Blake3Xof => {
+                let node_index_bytes = encode_u64(node_index)?;
+                let base = self
+                    .internal2_blake3_base
+                    .as_ref()
+                    .expect("blake3 internal2 base must exist for blake3-xof");
+                let static_suffix0 =
+                    &self.internal2_payload[self.internal2_node_index_offset + 8..self.internal2_label0_offset];
+                let static_suffix1 =
+                    &self.internal2_payload[self.internal2_label0_offset + self.output_bytes..self.internal2_label1_offset];
+                Self::blake3_hash_parts_into(
+                    base,
+                    self.output_bytes,
+                    &[
+                        &node_index_bytes,
+                        static_suffix0,
+                        predecessor0,
+                        static_suffix1,
+                        predecessor1,
+                    ],
+                    out,
+                );
+            }
+            HashBackend::Shake256 => {
+                Self::pack_node_index(
+                    &mut self.internal2_payload,
+                    self.internal2_node_index_offset,
+                    node_index,
+                )?;
+                self.internal2_payload
+                    [self.internal2_label0_offset..self.internal2_label0_offset + self.output_bytes]
+                    .copy_from_slice(predecessor0);
+                self.internal2_payload
+                    [self.internal2_label1_offset..self.internal2_label1_offset + self.output_bytes]
+                    .copy_from_slice(predecessor1);
+                self.hash_backend.hash_into(&self.internal2_payload, out);
+            }
+        }
         Ok(())
     }
 }
